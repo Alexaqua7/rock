@@ -3,3 +3,5 @@
 *.jpg
 /train/*
 /test/*
+*.pyc
+/venv/*

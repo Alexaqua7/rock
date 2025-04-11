@@ -1,0 +1,11 @@
+# PyTorch (CUDA 12.6 호환 버전)
+torch==2.6.0+cu126
+torchvision==0.21+cu126
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+# 기타 필요한 패키지
+timm
+opencv-python
+albumentations
+scikit-learn
+tqdm
