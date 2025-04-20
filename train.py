@@ -27,25 +27,6 @@ from sklearn.metrics import confusion_matrix, f1_score, classification_report
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 import torch.nn.functional as F
 from loss import FocalLoss, weighted_normalized_CrossEntropyLoss, CenterLoss, CombinedLoss
-
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=2.0, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha  # 클래스별 가중치 텐서 or None
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction='none')
-        pt = torch.exp(-ce_loss)  # 예측 확률 (logit을 softmax로 변환한 것)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
 import warnings
 warnings.filterwarnings(action='ignore')
 
