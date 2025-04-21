@@ -24,8 +24,9 @@ from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, f1_score, classification_report
-from torch.optim.lr_scheduler import CosineAnnealingLR
-from loss
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+import torch.nn.functional as F
+from loss import FocalLoss, weighted_normalized_CrossEntropyLoss, CenterLoss, CombinedLoss
 import warnings
 warnings.filterwarnings(action='ignore')
 
@@ -33,7 +34,7 @@ CFG = {
     'IMG_SIZE': 224,
     'EPOCHS': 15,
     'LEARNING_RATE': 3e-4,
-    'BATCH_SIZE': 64,
+    'BATCH_SIZE': 128,
     'SEED': 41
 }
 
@@ -89,7 +90,8 @@ class CustomDataset(Dataset):
 
 def train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=0, cur_epoch=1, saved_name="base"):
     model.to(device)
-    criterion = nn.CrossEntropyLoss().to(device)
+    criterion = weighted_normalized_CrossEntropyLoss(return_weights=False).to(device)
+
     
     best_model = None
     save_path = f"best_{saved_name}.pth"
