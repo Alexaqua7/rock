@@ -105,8 +105,8 @@ def inference(model, test_loader, device):
 
 
 if __name__ == '__main__':
-    model_name = "convnextv2_base.fcmae_ft_in22k_in1k_384"
-    saved_name = f"{model_name.replace('.','_')}"
+    model_name = "davit_base"
+    saved_name = f"./experiments/davit_base_1/davit_base_1-best.pth" # Inference할 모델의 가중치 경로를 입력하세요
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     seed_everything(CFG['SEED']) # Seed 고정
 
@@ -137,7 +137,7 @@ if __name__ == '__main__':
 
     # 모델 정의
     model = timm.create_model(model_name, pretrained=True, num_classes=7).to(device)
-    checkpoint = torch.load(f'best_{saved_name}.pth', map_location=device)
+    checkpoint = torch.load(saved_name, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
 
     preds = inference(model, test_loader, device)
@@ -145,4 +145,4 @@ if __name__ == '__main__':
 
     submit['rock_type'] = preds
 
-    submit.to_csv(f"./{saved_name}_submit_{checkpoint['epoch']}epoch.csv", index=False)
+    submit.to_csv(f"{os.path.splitext(saved_name)[0]}_submit_{checkpoint['epoch']}epoch.csv", index=False)

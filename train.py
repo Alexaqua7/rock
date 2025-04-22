@@ -28,13 +28,14 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 import torch.nn.functional as F
 from loss import FocalLoss, weighted_normalized_CrossEntropyLoss, CenterLoss, CombinedLoss
 import warnings
+import json
 warnings.filterwarnings(action='ignore')
 
 CFG = {
     'IMG_SIZE': 224,
     'EPOCHS': 15,
     'LEARNING_RATE': 3e-4,
-    'BATCH_SIZE': 128,
+    'BATCH_SIZE': 64,
     'SEED': 41
 }
 
@@ -88,13 +89,13 @@ class CustomDataset(Dataset):
     def __len__(self):
         return len(self.img_path_list)
 
-def train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=0, cur_epoch=1, saved_name="base"):
+def train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=0, cur_epoch=1, experiment_name="base", folder_path = "base"):
     model.to(device)
     criterion = weighted_normalized_CrossEntropyLoss(return_weights=False).to(device)
 
     
     best_model = None
-    save_path = f"best_{saved_name}.pth"
+    save_path = os.path.join(folder_path, f"{experiment_name}-best.pth")
 
     for epoch in range(cur_epoch, CFG['EPOCHS'] + 1):
         model.train()
@@ -135,10 +136,10 @@ def train(model, optimizer, train_loader, val_loader, scheduler, device, class_n
             'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
             'best_score': best_score
         }
-        torch.save(checkpoint, f'{saved_name}_epoch_{epoch}.pth')
-        print(f"Checkpoint at epoch {epoch} saved → {saved_name}_epoch_{epoch}.pth")
+        torch.save(checkpoint, os.path.join(folder_path, f'{experiment_name}-epoch_{epoch}.pth'))
+        print(f"Checkpoint at epoch {epoch} saved → {experiment_name}-epoch_{epoch}.pth")
 
-        prev_path = f'{saved_name}_epoch_{epoch-1}.pth'
+        prev_path = os.path.join(folder_path, f'{experiment_name}-epoch_{epoch-1}.pth')
         if epoch > 1 and os.path.exists(prev_path):
             os.remove(prev_path)
             print(f"Previous checkpoint deleted → {prev_path}")
@@ -202,16 +203,24 @@ def validation(model, criterion, val_loader, device, class_names):
     return _val_loss, _val_score, class_f1_dict, wandb_cm
 
 if __name__ == '__main__':
-    trained = False
-    # trained_path = "./best_hrnet_w64.pth"
-    model_name = "davit_base"
-    saved_name = f"{model_name.replace('.','_')}_centercrop"
+    trained_path = "./experiments/davit_base_1/davit_base_1-best.pth" # 이어서 학습을 진행할 경우, 학습된 모델 경로 설정. 처음부터 학습을 진행시킬 것이라면, 공백으로 설정
+    model_name = "davit_base" # TIMM 모델명 설정
+    test_size = 0.3
+
+
+
+    if trained_path == "":
+        idx = len([x for x in os.listdir('./experiments') if x.startswith(model_name)])
+        experiment_name = f"{model_name.replace('.','_')}_{idx+1}" # 실험이 저장될 folder 이름
+    else:
+        experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
+    folder_path = os.path.join("./experiments", experiment_name)
     wandb.init(
         project="rock-classification",
         config=CFG,
-        name=f"{model_name}_centercrop",
-        # resume='must',
-        # id="u07h2q8q"
+        name=experiment_name,
+        resume='must',
+        id="ix1s49ay"
     )
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -222,7 +231,7 @@ if __name__ == '__main__':
     df['img_path'] = all_img_list
     df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[2])
 
-    train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=0.3, stratify=df['rock_type'], random_state=CFG['SEED'])
+    train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=test_size, stratify=df['rock_type'], random_state=CFG['SEED'])
 
     le = preprocessing.LabelEncoder()
     train_data['rock_type'] = le.fit_transform(train_data['rock_type'])
@@ -236,10 +245,12 @@ if __name__ == '__main__':
     A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
     A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
     A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
+    A.GaussNoise(std_range=(0.1,0.15), mean_range=(-0.1,0), p=0.5),
     A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
     ToTensorV2()
 ])
     test_transform = A.Compose([
+        A.CenterCrop(np.random.randint(75, 200), np.random.randint(75, 200), pad_if_needed=True, p=0.5),
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
         A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
@@ -262,7 +273,46 @@ if __name__ == '__main__':
         "model": model_name
     })
 
-    if trained:
+
+
+    ###
+    config = {'experiment': {}, 'model':{}, 'train':{}, 'validation':{}, 'split':{}, 'seed': {}}
+    config['experiment']['name'] = experiment_name
+
+    config['model']['name'] = model_name
+    config['model']['IMG_size'] = CFG['IMG_SIZE']
+
+    config['train']['epoch'] = CFG['EPOCHS']
+    config['train']['lr'] = CFG['LEARNING_RATE']
+    config['train']['train_transform'] = [str(x) for x in train_transform]
+    config['train']['optimizer'] = {}
+    config['train']['optimizer']['name'] = optimizer.__class__.__name__
+    config['train']['scheduler'] = {}
+    config['train']['scheduler']['name'] = scheduler.__class__.__name__
+
+    config['validation']['test_transform'] = [str(x) for x in test_transform]
+
+    config['split'] = test_size
+
+    config['seed'] = CFG['SEED']
+
+    for k, v in optimizer.state_dict()['param_groups'][0].items():
+        if k == 'params': continue
+        config['train']['optimizer'][k] = v
+
+    for k, v in scheduler.state_dict().items():
+        if k == 'params': continue
+        config['train']['scheduler'][k] = v
+    experiment_dir = f"./experiments/{experiment_name}"
+    os.makedirs(experiment_dir, exist_ok=True)
+    config_path = os.path.join(experiment_dir, "config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+
+    ###
+
+
+    if trained_path != "":
         checkpoint = torch.load(trained_path, map_location=device)
         model.to(device)
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -270,8 +320,8 @@ if __name__ == '__main__':
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_score = checkpoint['best_score']
-        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=best_score, cur_epoch=start_epoch,saved_name=saved_name)
+        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=best_score, cur_epoch=start_epoch, experiment_name=experiment_name, folder_path = folder_path)
     else:
-        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, saved_name=saved_name)
+        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, experiment_name=experiment_name, folder_path = folder_path)
 
     wandb.finish()
