@@ -294,7 +294,7 @@ if __name__ == '__main__':
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     trained = False
     trained_path = './checkpoint.pth'
-    model_name = "../weights/OpenGVLab/internimage_l_22kto1k_384"
+    model_name = "../../../weights/OpenGVLab/internimage_l_22kto1k_384"
     saved_name = "internimage_l_22kto1k_384"
     model = AutoModelForImageClassification.from_pretrained(model_name, trust_remote_code=True)
 
@@ -308,7 +308,7 @@ if __name__ == '__main__':
 
     seed_everything(CFG['SEED'])
 
-    all_img_list = glob.glob('./train/*/*')
+    all_img_list = glob.glob('../../train/*/*')
     df = pd.DataFrame(columns=['img_path', 'rock_type'])
     df['img_path'] = all_img_list
     df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[2])
