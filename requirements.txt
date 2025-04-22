@@ -9,3 +9,7 @@ opencv-python
 albumentations
 scikit-learn
 tqdm
+scikit-learn
+wandb
+seaborn
+matplotlib
