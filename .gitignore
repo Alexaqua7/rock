@@ -5,3 +5,10 @@
 /test/*
 *.pyc
 /venv/*
+*.json
+*.wandb
+*.log
+*.txt
+*.yaml
+*.jpg
+*.png
