@@ -57,7 +57,6 @@ class PadSquare(ImageOnlyTransform):
         self.value = value
 
     def apply(self, image, **params):
-        print(f"Hello apply is called")
         h, w, c = image.shape
         max_dim = max(h, w)
         pad_h = max_dim - h
@@ -239,7 +238,7 @@ if __name__ == '__main__':
         experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
     folder_path = os.path.join("./experiments", experiment_name)
     wandb.init(
-        project="delete",#"rock-classification",
+        project="rock-classification",
         config=CFG,
         name=experiment_name,
         # resume='must',
