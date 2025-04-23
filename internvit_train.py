@@ -15,7 +15,7 @@ from torch.utils.data import Dataset, DataLoader
 
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
-from albumentations.core.transforms_interface import ImageOnlyTransform
+from albumentations.core.transforms_interface import ImageOnlyTransform, DualTransform
 
 from sklearn.model_selection import train_test_split
 from sklearn import preprocessing
@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, f1_score, classification_report
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 import torch.nn.functional as F
 from loss import FocalLoss, weighted_normalized_CrossEntropyLoss, CenterLoss, CombinedLoss
 import warnings
@@ -33,9 +33,9 @@ warnings.filterwarnings(action='ignore')
 
 CFG = {
     'IMG_SIZE': 448,
-    'EPOCHS': 15,
-    'LEARNING_RATE': 3e-4,
-    'BATCH_SIZE': 128,
+    'EPOCHS': 20,
+    'LEARNING_RATE': 5e-4,
+    'BATCH_SIZE': 256,
     'SEED': 41
 }
 
@@ -50,16 +50,24 @@ class RockClassifier(nn.Module):
         for param in self.model.parameters():
             param.requires_grad = False
 
-        self.classifier = nn.Linear(hidden_dim, num_classes, dtype=torch.float32)
+        self.classifier = nn.Sequential(
+        nn.Linear(hidden_dim, 512, dtype=torch.float32),
+        nn.Dropout(0.3),
+        nn.BatchNorm1d(512),
+        nn.ReLU(),
+        nn.Linear(512, 256, dtype=torch.float32),
+        nn.BatchNorm1d(256),
+        nn.ReLU(),
+        nn.Dropout(0.3),
+        nn.Linear(256, num_classes, dtype=torch.float32)
+    )
 
     def forward(self, pixel_values):
         with torch.no_grad():  # backbone은 freeze 가능
             pixel_values = pixel_values.to(torch.bfloat16).cuda()
             outputs = self.model(pixel_values)
             features = outputs['pooler_output']
-        print(f"features.shape: {features.shape}")
         logits = self.classifier(features.to(torch.float32))
-        print(f"logits.shape: {logits.shape}")
         return logits
 
 
@@ -71,6 +79,26 @@ def seed_everything(seed):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
+
+class RandomCenterCrop(ImageOnlyTransform):
+    def __init__(self, min_size=75, max_size=200, always_apply=False, p=1.0):
+        # 명시적으로 p 값 전달
+        super(RandomCenterCrop, self).__init__(always_apply=always_apply, p=p)
+        self.min_size = min_size
+        self.max_size = max_size
+        # 초기화 시 p 값 확인
+    
+    def apply(self, img, **params):
+        h = np.random.randint(self.min_size, self.max_size)
+        w = np.random.randint(self.min_size, self.max_size)
+        crop = A.CenterCrop(height=h, width=w, pad_if_needed=True, p=1)
+        return crop(image=img)['image']
+    
+    def get_transform_init_args_names(self):
+        return ("min_size", "max_size", "p")
+    
+    def __str__(self):
+        return f"RandomCenterCrop(p={self.p}, min_size={self.min_size}, max_size={self.max_size})"
 
 class PadSquare(ImageOnlyTransform):
     def __init__(self, border_mode=0, value=0, always_apply=False, p=1.0):
@@ -114,26 +142,32 @@ class CustomDataset(Dataset):
         return len(self.img_path_list)
 
 class InternViTDataset(Dataset):
-    def __init__(self, img_path_list, label_list=None, processor_path='./weights/OpenGVLab/InternViT-300M-448px-V2_5'):
+    def __init__(self, img_path_list, label_list=None, transform=None, processor_path='./weights/OpenGVLab/InternViT-300M-448px-V2_5', mode='train'):
         self.img_path_list = img_path_list
         self.label_list = label_list
         self.processor = CLIPImageProcessor.from_pretrained(processor_path)
+        self.transform = transform
 
     def __getitem__(self, index):
         img_path = self.img_path_list[index]
 
-        # PIL 이미지로 읽기
-        image = Image.open(img_path).convert('RGB')
+        # PIL → np array로 변환 (Albumentations는 numpy 기반)
+        image = np.array(Image.open(img_path).convert('RGB'))
 
-        # CLIPImageProcessor를 사용한 전처리
-        pixel_values = self.processor(images=image, return_tensors='pt').pixel_values.squeeze(0)  # [3, H, W]
+        # augmentation 적용 (Normalize, Resize는 제외)
+        if self.transform is not None:
+            image = self.transform(image=image)['image']
+
+        # 다시 PIL로 변환 후 CLIPImageProcessor 적용
+        image_pil = Image.fromarray(image)
+        pixel_values = self.processor(images=image_pil, return_tensors='pt').pixel_values.squeeze(0)  # [3, H, W]
 
         if self.label_list is not None:
             label = self.label_list[index]
             return pixel_values, label
         else:
             return pixel_values
-
+    
     def __len__(self):
         return len(self.img_path_list)
 
@@ -264,7 +298,7 @@ if __name__ == '__main__':
         experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
     folder_path = os.path.join("./experiments", experiment_name)
     wandb.init(
-        project="delete",
+        project="rock-classification",
         config=CFG,
         name=experiment_name,
     #     resume='must',
@@ -288,32 +322,40 @@ if __name__ == '__main__':
     class_names = le.classes_
 
     train_transform = A.Compose([
-    A.CenterCrop(np.random.randint(75, 200), np.random.randint(75, 200), pad_if_needed=True, p=0.5),
-    PadSquare(value=(0, 0, 0)),
-    A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-    A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
-    A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
-    A.GaussNoise(std_range=(0.1,0.15), mean_range=(-0.1,0), p=0.5),
-    A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-    ToTensorV2()
+    RandomCenterCrop(min_size=75, max_size=200, p=0.5),
+    A.HorizontalFlip(p=0.5),
+    A.VerticalFlip(p=0.5),
+    A.GaussNoise(std_range=(0.1, 0.15), p=0.5),
 ])
     test_transform = A.Compose([
-        A.CenterCrop(np.random.randint(75, 200), np.random.randint(75, 200), pad_if_needed=True, p=0.5),
-        PadSquare(value=(0, 0, 0)),
-        A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-        ToTensorV2()
+        RandomCenterCrop(min_size=75, max_size=200, p=0.4),
     ])
 
-    train_dataset = InternViTDataset(train_data['img_path'].values, train_data['rock_type'].values)#, train_transform)
+    train_dataset = InternViTDataset(train_data['img_path'].values, train_data['rock_type'].values, train_transform)
     train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=2)
 
-    val_dataset = InternViTDataset(val_data['img_path'].values, val_data['rock_type'].values)#, test_transform)
+    val_dataset = InternViTDataset(val_data['img_path'].values, val_data['rock_type'].values, test_transform)
     val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=2)
 
     model = RockClassifier(num_classes = len(class_names))
     optimizer = torch.optim.Adam(params=model.parameters(), lr=CFG["LEARNING_RATE"])
-    scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=1e-8)
+    # scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=1e-8)
+    # 예시 config
+    num_warmup_epochs = 3
+    num_training_epochs = CFG['EPOCHS']
+
+    # Warm-up: lr을 선형 증가 (0 → base_lr)
+    warmup_scheduler = LinearLR(optimizer, start_factor=1e-2, end_factor=1.0, total_iters=num_warmup_epochs)
+
+    # Cosine Annealing Scheduler
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=num_training_epochs - num_warmup_epochs, eta_min=1e-8)
+
+    # 두 scheduler를 연결
+    scheduler = SequentialLR(
+    optimizer,
+    schedulers=[warmup_scheduler, cosine_scheduler],
+    milestones=[num_warmup_epochs]  # warmup 끝나는 시점
+    )
 
     wandb.config.update({
         "optimizer": optimizer.__class__.__name__,

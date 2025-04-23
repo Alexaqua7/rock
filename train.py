@@ -29,13 +29,15 @@ import torch.nn.functional as F
 from loss import FocalLoss, weighted_normalized_CrossEntropyLoss, CenterLoss, CombinedLoss
 import warnings
 import json
+from PIL import Image
+
 warnings.filterwarnings(action='ignore')
 
 CFG = {
-    'IMG_SIZE': 224,
+    'IMG_SIZE': 512,
     'EPOCHS': 15,
     'LEARNING_RATE': 3e-4,
-    'BATCH_SIZE': 64,
+    'BATCH_SIZE': 2,
     'SEED': 41
 }
 
@@ -55,6 +57,7 @@ class PadSquare(ImageOnlyTransform):
         self.value = value
 
     def apply(self, image, **params):
+        print(f"Hello apply is called")
         h, w, c = image.shape
         max_dim = max(h, w)
         pad_h = max_dim - h
@@ -67,7 +70,27 @@ class PadSquare(ImageOnlyTransform):
         return image
 
     def get_transform_init_args_names(self):
-        return ("border_mode", "value")
+        return ("border_mode", "value", "p")
+
+class RandomCenterCrop(ImageOnlyTransform):
+    def __init__(self, min_size=75, max_size=200, always_apply=False, p=1.0):
+        # 명시적으로 p 값 전달
+        super(RandomCenterCrop, self).__init__(always_apply=always_apply, p=p)
+        self.min_size = min_size
+        self.max_size = max_size
+        # 초기화 시 p 값 확인
+    
+    def apply(self, img, **params):
+        h = np.random.randint(self.min_size, self.max_size)
+        w = np.random.randint(self.min_size, self.max_size)
+        crop = A.CenterCrop(height=h, width=w, pad_if_needed=True, p=1)
+        return crop(image=img)['image']
+    
+    def get_transform_init_args_names(self):
+        return ("min_size", "max_size", "p")
+    
+    def __str__(self):
+        return f"RandomCenterCrop(p={self.p}, min_size={self.min_size}, max_size={self.max_size})"
 
 class CustomDataset(Dataset):
     def __init__(self, img_path_list, label_list, transforms=None):
@@ -203,7 +226,7 @@ def validation(model, criterion, val_loader, device, class_names):
     return _val_loss, _val_score, class_f1_dict, wandb_cm
 
 if __name__ == '__main__':
-    trained_path = "./experiments/davit_base_1/davit_base_1-best.pth" # 이어서 학습을 진행할 경우, 학습된 모델 경로 설정. 처음부터 학습을 진행시킬 것이라면, 공백으로 설정
+    trained_path = "" # 이어서 학습을 진행할 경우, 학습된 모델 경로 설정. 처음부터 학습을 진행시킬 것이라면, 공백으로 설정
     model_name = "davit_base" # TIMM 모델명 설정
     test_size = 0.3
 
@@ -216,11 +239,11 @@ if __name__ == '__main__':
         experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
     folder_path = os.path.join("./experiments", experiment_name)
     wandb.init(
-        project="rock-classification",
+        project="delete",#"rock-classification",
         config=CFG,
         name=experiment_name,
-        resume='must',
-        id="ix1s49ay"
+        # resume='must',
+        # id="ix1s49ay"
     )
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -240,17 +263,18 @@ if __name__ == '__main__':
     class_names = le.classes_
 
     train_transform = A.Compose([
-    A.CenterCrop(np.random.randint(75, 200), np.random.randint(75, 200), pad_if_needed=True, p=0.5),
+    RandomCenterCrop(min_size=75, max_size=200, p=0.5),
     PadSquare(value=(0, 0, 0)),
     A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
     A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
     A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
-    A.GaussNoise(std_range=(0.1,0.15), mean_range=(-0.1,0), p=0.5),
+    A.GaussNoise(std_range=(0.1,0.15), p=0.5),
     A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+    A.ColorJitter(p=0.5),
     ToTensorV2()
 ])
     test_transform = A.Compose([
-        A.CenterCrop(np.random.randint(75, 200), np.random.randint(75, 200), pad_if_needed=True, p=0.5),
+        RandomCenterCrop(min_size=75, max_size=200, p=0.4),
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
         A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
