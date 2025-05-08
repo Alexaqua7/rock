@@ -21,7 +21,7 @@ import wandb
 from sklearn.metrics import f1_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
-
+import json
 
 CFG = {
     'IMG_SIZE': 384,
@@ -57,6 +57,26 @@ class PadSquare(ImageOnlyTransform):
 
     def get_transform_init_args_names(self):
         return ("border_mode", "value")
+
+class RandomCenterCrop(ImageOnlyTransform):
+    def __init__(self, min_size=75, max_size=200, always_apply=False, p=1.0):
+        # 명시적으로 p 값 전달
+        super(RandomCenterCrop, self).__init__(always_apply=always_apply, p=p)
+        self.min_size = min_size
+        self.max_size = max_size
+        # 초기화 시 p 값 확인
+    
+    def apply(self, img, **params):
+        h = np.random.randint(self.min_size, self.max_size)
+        w = np.random.randint(self.min_size, self.max_size)
+        crop = A.CenterCrop(height=h, width=w, pad_if_needed=True, p=1)
+        return crop(image=img)['image']
+    
+    def get_transform_init_args_names(self):
+        return ("min_size", "max_size", "p")
+    
+    def __str__(self):
+        return f"RandomCenterCrop(p={self.p}, min_size={self.min_size}, max_size={self.max_size})"
 
 class CustomDataset(Dataset):
     def __init__(self, img_path_list, label_list, transforms=None):
@@ -293,10 +313,18 @@ if __name__ == '__main__':
     import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     trained = False
-    trained_path = './checkpoint.pth'
-    model_name = "../../../weights/OpenGVLab/internimage_l_22kto1k_384"
+    trained_path = ''
+    model_name = "../../../weights/OpenGVLab/internimage_xl_22kto1k_384.pth"
     saved_name = "internimage_l_22kto1k_384"
     model = AutoModelForImageClassification.from_pretrained(model_name, trust_remote_code=True)
+    test_size = 0.3
+
+    if trained_path == "":
+        idx = len([x for x in os.listdir('./experiments') if x.startswith(model_name)])
+        experiment_name = f"{model_name.replace('.','_')}_{idx+1}" # 실험이 저장될 folder 이름
+    else:
+        experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
+    folder_path = os.path.join("../../experiments", experiment_name)
 
     wandb.init(
         project="rock-classification",
@@ -313,7 +341,7 @@ if __name__ == '__main__':
     df['img_path'] = all_img_list
     df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[2])
 
-    train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=0.3, stratify=df['rock_type'], random_state=CFG['SEED'])
+    train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=test_size, stratify=df['rock_type'], random_state=CFG['SEED'])
 
     le = preprocessing.LabelEncoder()
     train_data['rock_type'] = le.fit_transform(train_data['rock_type'])
@@ -329,14 +357,18 @@ if __name__ == '__main__':
     model = model.to(device)
 
     train_transform = A.Compose([
+    RandomCenterCrop(min_size=75, max_size=200, p=0.5),
     PadSquare(value=(0, 0, 0)),
     A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
     A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
     A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
+    A.GaussNoise(std_range=(0.1,0.15), p=0.5),
+    A.CLAHE(p=0.5),
     A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
     ToTensorV2()
 ])
     test_transform = A.Compose([
+        RandomCenterCrop(min_size=75, max_size=200, p=0.4),
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
         A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
@@ -352,6 +384,42 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(params=model.parameters(), lr=CFG["LEARNING_RATE"])
     scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=1e-8)
     scaler = GradScaler()
+
+    ###
+    config = {'experiment': {}, 'model':{}, 'train':{}, 'validation':{}, 'split':{}, 'seed': {}}
+    config['experiment']['name'] = experiment_name
+
+    config['model']['name'] = model_name
+    config['model']['IMG_size'] = CFG['IMG_SIZE']
+
+    config['train']['epoch'] = CFG['EPOCHS']
+    config['train']['lr'] = CFG['LEARNING_RATE']
+    config['train']['train_transform'] = [str(x) for x in train_transform]
+    config['train']['optimizer'] = {}
+    config['train']['optimizer']['name'] = optimizer.__class__.__name__
+    config['train']['scheduler'] = {}
+    config['train']['scheduler']['name'] = scheduler.__class__.__name__
+
+    config['validation']['test_transform'] = [str(x) for x in test_transform]
+
+    config['split'] = test_size
+
+    config['seed'] = CFG['SEED']
+
+    for k, v in optimizer.state_dict()['param_groups'][0].items():
+        if k == 'params': continue
+        config['train']['optimizer'][k] = v
+
+    for k, v in scheduler.state_dict().items():
+        if k == 'params': continue
+        config['train']['scheduler'][k] = v
+    experiment_dir = f"./experiments/{experiment_name}"
+    os.makedirs(experiment_dir, exist_ok=True)
+    config_path = os.path.join(experiment_dir, "config.json")
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=4)
+
+    ###
 
     if trained:
         checkpoint = torch.load(trained_path, map_location=device)
