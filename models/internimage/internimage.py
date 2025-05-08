@@ -22,17 +22,19 @@ from sklearn.metrics import f1_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
 import json
+from sklearn.model_selection import StratifiedKFold
 
 CFG = {
     'IMG_SIZE': 384,
-    'EPOCHS': 15,
+    'EPOCHS': 20,
     'LEARNING_RATE': 2e-5,
     'BATCH_SIZE': 8,
     'SEED': 41,
     'AMP_TYPE': 'bfloat16',  # 예시로 추가
     'AMP_OPT_LEVEL': 'O1',  # 예시로 추가
+    'kFold': 5,
     'TRAIN': {
-        'ACCUMULATION_STEPS': 1, # 예시로 추가
+        'ACCUMULATION_STEPS': 8, # 예시로 추가
         'CLIP_GRAD': None # 예시로 추가
     }
 }
@@ -312,122 +314,124 @@ def train(CFG, model, criterion, train_loader, val_loader, optimizer, lr_schedul
 if __name__ == '__main__':
     import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    trained = False
     trained_path = ''
-    model_name = "../../../weights/OpenGVLab/internimage_xl_22kto1k_384.pth"
+    model_name = "../../weights/OpenGVLab/internimage_xl_22kto1k_384"
     saved_name = "internimage_l_22kto1k_384"
-    model = AutoModelForImageClassification.from_pretrained(model_name, trust_remote_code=True)
-    test_size = 0.3
+    num_folds = CFG['kFold']  # K-Fold의 K 값 설정
 
-    if trained_path == "":
-        idx = len([x for x in os.listdir('./experiments') if x.startswith(model_name)])
-        experiment_name = f"{model_name.replace('.','_')}_{idx+1}" # 실험이 저장될 folder 이름
-    else:
-        experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
-    folder_path = os.path.join("../../experiments", experiment_name)
-
-    wandb.init(
-        project="rock-classification",
-        config=CFG,
-        name=f"{saved_name}",
-        # resume='must',
-        # id="38lkdqqs"
-    )
-
-    seed_everything(CFG['SEED'])
-
+    le = preprocessing.LabelEncoder()
     all_img_list = glob.glob('../../train/*/*')
     df = pd.DataFrame(columns=['img_path', 'rock_type'])
     df['img_path'] = all_img_list
-    df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[2])
+    df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[3])
+    df['rock_type'] = le.fit_transform(df['rock_type'])
+    
 
-    train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=test_size, stratify=df['rock_type'], random_state=CFG['SEED'])
+    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=CFG['SEED'])
+    for fold, (train_idx, val_idx) in enumerate(skf.split(df['img_path'], df['rock_type'])):
+        if trained_path == "":
+            idx = len([x for x in os.listdir('../../experiments') if x.startswith(model_name)])
+            experiment_name = f"{model_name.replace('.','_')}_fold_{fold+1}" # 실험이 저장될 folder 이름
+        else:
+            experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
+        folder_path = os.path.join("../../experiments", experiment_name)
 
-    le = preprocessing.LabelEncoder()
-    train_data['rock_type'] = le.fit_transform(train_data['rock_type'])
-    val_data['rock_type'] = le.transform(val_data['rock_type'])
+        wandb.init(
+            project="rock-classification",
+            config=CFG,
+            name=f"{saved_name}_fold_{fold+1}",
+            # resume='must',
+            # id="38lkdqqs"
+        )
 
-    class_names = le.classes_
+        seed_everything(CFG['SEED'])
 
-    num_classes = len(class_names)
+        train_data = df.iloc[train_idx].copy().reset_index(drop=True)
+        val_data = df.iloc[val_idx].copy().reset_index(drop=True)
+        
+        class_names = le.classes_
 
-    # 모델 head 레이어 재정의
-    in_features = model.model.head.in_features
-    model.model.head = torch.nn.Linear(in_features, num_classes)
-    model = model.to(device)
+        num_classes = len(class_names)
 
-    train_transform = A.Compose([
-    RandomCenterCrop(min_size=75, max_size=200, p=0.5),
-    PadSquare(value=(0, 0, 0)),
-    A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-    A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
-    A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
-    A.GaussNoise(std_range=(0.1,0.15), p=0.5),
-    A.CLAHE(p=0.5),
-    A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-    ToTensorV2()
-])
-    test_transform = A.Compose([
-        RandomCenterCrop(min_size=75, max_size=200, p=0.4),
+        # 모델 head 레이어 재정의
+        model = AutoModelForImageClassification.from_pretrained(model_name, trust_remote_code=True)
+        in_features = model.model.head.in_features
+        model.model.head = torch.nn.Linear(in_features, num_classes)
+        model = model.to(device)
+
+        train_transform = A.Compose([
+        RandomCenterCrop(min_size=75, max_size=200, p=0.5),
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
+        A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
+        A.GaussNoise(std_range=(0.1,0.15), p=0.5),
+        A.CLAHE(p=0.5),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2()
     ])
+        test_transform = A.Compose([
+            RandomCenterCrop(min_size=75, max_size=200, p=0.4),
+            PadSquare(value=(0, 0, 0)),
+            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ])
 
-    train_dataset = CustomDataset(train_data['img_path'].values, train_data['rock_type'].values, train_transform)
-    train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=2)
+        train_dataset = CustomDataset(train_data['img_path'].values, train_data['rock_type'].values, train_transform)
+        train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=2)
 
-    val_dataset = CustomDataset(val_data['img_path'].values, val_data['rock_type'].values, test_transform)
-    val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=2)
+        val_dataset = CustomDataset(val_data['img_path'].values, val_data['rock_type'].values, test_transform)
+        val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=2)
 
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=CFG["LEARNING_RATE"])
-    scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=1e-8)
-    scaler = GradScaler()
+        optimizer = torch.optim.Adam(params=model.parameters(), lr=CFG["LEARNING_RATE"])
+        scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=1e-8)
+        scaler = GradScaler()
 
-    ###
-    config = {'experiment': {}, 'model':{}, 'train':{}, 'validation':{}, 'split':{}, 'seed': {}}
-    config['experiment']['name'] = experiment_name
+        ###
+        config = {'experiment': {}, 'model':{}, 'train':{}, 'validation':{}, 'split':{}, 'seed': {}}
+        config['experiment']['name'] = experiment_name
 
-    config['model']['name'] = model_name
-    config['model']['IMG_size'] = CFG['IMG_SIZE']
+        config['model']['name'] = model_name
+        config['model']['IMG_size'] = CFG['IMG_SIZE']
 
-    config['train']['epoch'] = CFG['EPOCHS']
-    config['train']['lr'] = CFG['LEARNING_RATE']
-    config['train']['train_transform'] = [str(x) for x in train_transform]
-    config['train']['optimizer'] = {}
-    config['train']['optimizer']['name'] = optimizer.__class__.__name__
-    config['train']['scheduler'] = {}
-    config['train']['scheduler']['name'] = scheduler.__class__.__name__
+        config['train']['epoch'] = CFG['EPOCHS']
+        config['train']['lr'] = CFG['LEARNING_RATE']
+        config['train']['train_transform'] = [str(x) for x in train_transform]
+        config['train']['optimizer'] = {}
+        config['train']['optimizer']['name'] = optimizer.__class__.__name__
+        config['train']['scheduler'] = {}
+        config['train']['scheduler']['name'] = scheduler.__class__.__name__
 
-    config['validation']['test_transform'] = [str(x) for x in test_transform]
+        config['validation']['test_transform'] = [str(x) for x in test_transform]
 
-    config['split'] = test_size
+        config['split'] = {}
+        config['split']['kFold'] = num_folds
 
-    config['seed'] = CFG['SEED']
+        config['seed'] = CFG['SEED']
 
-    for k, v in optimizer.state_dict()['param_groups'][0].items():
-        if k == 'params': continue
-        config['train']['optimizer'][k] = v
+        for k, v in optimizer.state_dict()['param_groups'][0].items():
+            if k == 'params': continue
+            config['train']['optimizer'][k] = v
 
-    for k, v in scheduler.state_dict().items():
-        if k == 'params': continue
-        config['train']['scheduler'][k] = v
-    experiment_dir = f"./experiments/{experiment_name}"
-    os.makedirs(experiment_dir, exist_ok=True)
-    config_path = os.path.join(experiment_dir, "config.json")
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=4)
+        for k, v in scheduler.state_dict().items():
+            if k == 'params': continue
+            config['train']['scheduler'][k] = v
+        experiment_dir = f"./experiments/{experiment_name}"
+        os.makedirs(experiment_dir, exist_ok=True)
+        config_path = os.path.join(experiment_dir, "config.json")
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=4)
 
-    ###
+        ###
 
-    if trained:
-        checkpoint = torch.load(trained_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        if trained_path != "":
+            checkpoint = torch.load(trained_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
-    train(CFG, model, torch.nn.CrossEntropyLoss(), train_loader, val_loader, optimizer, scheduler, scaler, mixup_fn=None, class_names=class_names, saved_name=saved_name)
+        train(CFG, model, torch.nn.CrossEntropyLoss(), train_loader, val_loader, optimizer, scheduler, scaler, mixup_fn=None, class_names=class_names, saved_name=saved_name)
 
 
-    wandb.finish()
+        wandb.finish()
