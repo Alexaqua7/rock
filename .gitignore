@@ -13,3 +13,4 @@
 *.jpg
 *.png
 *.zip
+/weights/*

@@ -106,7 +106,7 @@ def inference(model, test_loader, device):
 
 if __name__ == '__main__':
     model_name = "davit_base"
-    saved_name = f"./experiments/davit_base_1/davit_base_1-best.pth" # Inference할 모델의 가중치 경로를 입력하세요
+    saved_name = f"./experiments\davit_base_22\davit_base_22-best.pth" # Inference할 모델의 가중치 경로를 입력하세요
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     seed_everything(CFG['SEED']) # Seed 고정
 
@@ -133,7 +133,7 @@ if __name__ == '__main__':
     test = pd.read_csv('./test.csv')
 
     test_dataset = CustomDataset(test['img_path'].values, None, test_transform)
-    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=8)
 
     # 모델 정의
     model = timm.create_model(model_name, pretrained=True, num_classes=7).to(device)

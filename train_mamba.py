@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensorV2
 from albumentations.core.transforms_interface import ImageOnlyTransform
-from collections import Counter
+
 from sklearn.model_selection import train_test_split
 from sklearn import preprocessing
 from sklearn.metrics import f1_score
@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, f1_score, classification_report
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 import torch.nn.functional as F
 from loss import FocalLoss, weighted_normalized_CrossEntropyLoss, CenterLoss, CombinedLoss
 import warnings
@@ -32,19 +32,18 @@ import json
 from PIL import Image
 import platform
 import socket
-import uuid
 import getpass
+from torch.amp import autocast, GradScaler
 
 warnings.filterwarnings(action='ignore')
 
 CFG = {
     'IMG_SIZE': 224,
-    'EPOCHS': 15,
-    'WARM_UP': 0, 
-    'LEARNING_RATE': 3e-4,
-    'BATCH_SIZE': 32,
-    'ACCUMULATION_STEPS': 2,
-    'SEED': 41
+    'EPOCHS': 18,
+    'LEARNING_RATE': 3e-5,
+    'BATCH_SIZE': 16,
+    'SEED': 41,
+    'WARM_UP': 3
 }
 
 def seed_everything(seed):
@@ -54,11 +53,11 @@ def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True
 
 class PadSquare(ImageOnlyTransform):
     def __init__(self, border_mode=0, value=0, always_apply=False, p=1.0):
-        super().__init__(always_apply=always_apply, p=p)
+        super().__init__(always_apply, p)
         self.border_mode = border_mode
         self.value = value
 
@@ -76,9 +75,6 @@ class PadSquare(ImageOnlyTransform):
 
     def get_transform_init_args_names(self):
         return ("border_mode", "value", "p")
-    
-    def __str__(self):
-        return f"PadSquare(p={self.p}, border_mode={self.border_mode}, value={self.value})"
 
 class RandomCenterCrop(ImageOnlyTransform):
     def __init__(self, min_size=75, max_size=200, always_apply=False, p=1.0):
@@ -101,22 +97,16 @@ class RandomCenterCrop(ImageOnlyTransform):
         return f"RandomCenterCrop(p={self.p}, min_size={self.min_size}, max_size={self.max_size})"
 
 class CustomDataset(Dataset):
-    def __init__(self, img_path_list, label_list, transforms=None, save_images=False):
+    def __init__(self, img_path_list, label_list, transforms=None):
         self.img_path_list = img_path_list
         self.label_list = label_list
         self.transforms = transforms
-        self.save_images = save_images
-
+        
     def __getitem__(self, index):
         img_path = self.img_path_list[index]
         image = cv2.imread(img_path)
         if self.transforms is not None:
-            transformed = self.transforms(image=image)
-            image = transformed['image']
-
-            if self.save_images:
-                self.save_image(transformed, index)
-
+            image = self.transforms(image=image)['image']
         if self.label_list is not None:
             label = self.label_list[index]
             return image, label
@@ -125,27 +115,8 @@ class CustomDataset(Dataset):
         
     def __len__(self):
         return len(self.img_path_list)
-    
-    def save_image(self, transformed, index):
-        # 텐서인 경우
-        save_img = transformed['image']
-        save_img = cv2.cvtColor(save_img, cv2.COLOR_BGR2RGB)
-        if isinstance(save_img, torch.Tensor):
-            img_np = save_img.permute(1, 2, 0).cpu().numpy()  # (C, H, W) → (H, W, C)
-            img_np = np.clip(img_np * 255.0, 0, 255).astype(np.uint8)  # [0,1] → [0,255] 후 uint8
-        else:
-            img_np = transformed['image']
-            if img_np.dtype != np.uint8:
-                img_np = np.clip(img_np, 0, 255).astype(np.uint8)
 
-        output_dir = "./saved_images"
-        os.makedirs(output_dir, exist_ok=True)
-        save_path = os.path.join(output_dir, f'transformed_image_{index}.jpg')
-        img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(save_path, img_bgr)
-        print(f"변환된 이미지 저장 완료: {save_path}")
-
-def train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=0, cur_epoch=1, experiment_name="base", folder_path = "base", class_counts=None, accumulation_steps=1):
+def train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=0, cur_epoch=1, experiment_name="base", folder_path = "base", accumulation_steps=4):
     model.to(device)
     criterion = weighted_normalized_CrossEntropyLoss(return_weights=False).to(device)
     
@@ -163,15 +134,17 @@ def train(model, optimizer, train_loader, val_loader, scheduler, device, class_n
 
             output = model(imgs)
             loss = criterion(output, labels)
+
             loss = loss / accumulation_steps
+
             loss.backward()
             if (step+1) % accumulation_steps == 0 or (step+1) == len(train_loader):
                 optimizer.step()
                 optimizer.zero_grad()
 
             train_loss.append(loss.item())
-            progress_bar.set_postfix(loss=loss.item() * accumulation_steps)
-
+            if step % 50 == 0:
+                progress_bar.set_postfix(loss=loss.item() * accumulation_steps)
         _val_loss, _val_score, class_f1_dict, wandb_cm = validation(model, criterion, val_loader, device, class_names)
 
         log_data = {
@@ -259,12 +232,14 @@ def validation(model, criterion, val_loader, device, class_names):
     return _val_loss, _val_score, class_f1_dict, wandb_cm
 
 if __name__ == '__main__':
-    trained_path = "./experiments/vit_so150m2_patch16_reg1_gap_384_sbb_e200_in12k_ft_in1k_2/vit_so150m2_patch16_reg1_gap_384_sbb_e200_in12k_ft_in1k_2-best.pth" # 이어서 학습을 진행할 경우, 학습된 모델 경로 설정. 처음부터 학습을 진행시킬 것이라면, 공백으로 설정
-    model_name = "vit_so150m2_patch16_reg1_gap_384.sbb_e200_in12k_ft_in1k" # TIMM 모델명 설정
+    trained_path = "./experiments/mambaout_base_plus_rw_sw_e150_in12k_ft_in1k_1/mambaout_base_plus_rw_sw_e150_in12k_ft_in1k_1-best.pth" # 이어서 학습을 진행할 경우, 학습된 모델 경로 설정. 처음부터 학습을 진행시킬 것이라면, 공백으로 설정
+    model_name = "mambaout_base_plus_rw.sw_e150_in12k_ft_in1k" # TIMM 모델명 설정
     test_size = 0.3
 
+
+
     if trained_path == "":
-        idx = len([x for x in os.listdir('./experiments') if x.startswith(model_name.replace('.','_'))])
+        idx = len([x for x in os.listdir('./experiments') if x.startswith(model_name)])
         experiment_name = f"{model_name.replace('.','_')}_{idx+1}" # 실험이 저장될 folder 이름
     else:
         experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
@@ -273,8 +248,8 @@ if __name__ == '__main__':
         project="rock-classification",
         config=CFG,
         name=f"{experiment_name}_{socket.gethostname()}",
-        # resume='must',
-        # id="ol7wbe3j",
+        resume='must',
+        id="by3jitd6",
         entity = "alexseo-inha-university"
     )
 
@@ -294,22 +269,14 @@ if __name__ == '__main__':
 
     class_names = le.classes_
 
-    label_counts = Counter(train_data['rock_type'])
-
-# le.classes_ 순서에 맞춰 클래스별 count 매핑
-    class_counts = {
-    class_name: label_counts[i] for i, class_name in enumerate(le.classes_)
-}
-
     train_transform = A.Compose([
     RandomCenterCrop(min_size=75, max_size=200, p=0.5),
     PadSquare(value=(0, 0, 0)),
+    A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
     A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
     A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
     A.GaussNoise(std_range=(0.1,0.15), p=0.5),
-    A.Transpose(p=0.5),
     A.CLAHE(p=0.5),
-    A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
     A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
     ToTensorV2()
 ])
@@ -317,36 +284,46 @@ if __name__ == '__main__':
         RandomCenterCrop(min_size=75, max_size=200, p=0.4),
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-        A.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5)),
+        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ToTensorV2()
     ])
 
     train_dataset = CustomDataset(train_data['img_path'].values, train_data['rock_type'].values, train_transform)
-    train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
+    train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=4, persistent_workers=True)
 
     val_dataset = CustomDataset(val_data['img_path'].values, val_data['rock_type'].values, test_transform)
-    val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=4, pin_memory=True, prefetch_factor=2)
+    val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=4, pin_memory=True, prefetch_factor=4, persistent_workers=True)
 
     model = timm.create_model(model_name, pretrained=True, num_classes=len(class_names))
     optimizer = torch.optim.Adam(params=model.parameters(), lr=CFG["LEARNING_RATE"])
 
-    if CFG['WARM_UP'] > 1:
-        # 1. Warmup (Linear 증가)
-        warmup_scheduler = LinearLR(optimizer, start_factor=1/3, end_factor=1.0, total_iters=CFG['WARM_UP'])
+    # 1. Warmup 스케줄러
+    warmup_scheduler = LinearLR(
+        optimizer,
+        start_factor=1/3,   # 초기 lr = base_lr * 1e-1
+        end_factor=1.0,      # warmup 끝나면 base_lr
+        total_iters=CFG['WARM_UP']
+    )
 
-        # 2. Cosine Annealing
-        cosine_scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'] - CFG['WARM_UP'], eta_min=3e-7)
+    # 2. 이후 CosineAnnealing
+    cosine_scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=CFG['EPOCHS'] - CFG['WARM_UP'],
+        eta_min=1e-6
+    )
 
-        # 3. Sequential 스케줄러
-        scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[CFG['WARM_UP']])
-    else:
-        scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=2e-7)
+    # 3. Sequential하게 연결
+    scheduler = SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[CFG['WARM_UP']]
+    )
 
     wandb.config.update({
         "optimizer": optimizer.__class__.__name__,
         "scheduler": scheduler.__class__.__name__,
         "model": model_name
-    }, allow_val_change=True)
+    })
 
 
 
@@ -362,9 +339,9 @@ if __name__ == '__main__':
     config['train']['train_transform'] = [str(x) for x in train_transform]
     config['train']['optimizer'] = {}
     config['train']['optimizer']['name'] = optimizer.__class__.__name__
-    config['train']['optimizer']['accumulation_steps'] = CFG['ACCUMULATION_STEPS']
     config['train']['scheduler'] = {}
     config['train']['scheduler']['name'] = scheduler.__class__.__name__
+    config['train']['scheduler']['warmup'] = CFG['WARM_UP']
 
     config['validation']['test_transform'] = [str(x) for x in test_transform]
 
@@ -388,17 +365,6 @@ if __name__ == '__main__':
     for k, v in scheduler.state_dict().items():
         if k == 'params': continue
         config['train']['scheduler'][k] = v
-    system_info = {
-    'hostname': socket.gethostname(),
-    'ip_address': socket.gethostbyname(socket.gethostname()),
-    'user': getpass.getuser(),
-    'platform': platform.platform(),
-    'processor': platform.processor(),
-    'machine': platform.machine(),
-    'uuid': hex(uuid.getnode())
-}
-
-    config['system'] = system_info
     experiment_dir = f"./experiments/{experiment_name}"
     os.makedirs(experiment_dir, exist_ok=True)
     config_path = os.path.join(experiment_dir, "config.json")
@@ -416,10 +382,8 @@ if __name__ == '__main__':
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_score = checkpoint['best_score']
-        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=best_score, cur_epoch=start_epoch, experiment_name=experiment_name, folder_path = folder_path, class_counts=class_counts, accumulation_steps=CFG['ACCUMULATION_STEPS'])
+        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=best_score, cur_epoch=start_epoch, experiment_name=experiment_name, folder_path = folder_path)
     else:
-        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, experiment_name=experiment_name, folder_path = folder_path, class_counts=class_counts, accumulation_steps=CFG['ACCUMULATION_STEPS'])
+        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, experiment_name=experiment_name, folder_path = folder_path)
 
     wandb.finish()
-    # for model in timm.list_models(pretrained=True)[1000:]:
-    #     print(model)

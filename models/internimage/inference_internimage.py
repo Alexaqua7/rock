@@ -21,11 +21,12 @@ import wandb
 from sklearn.metrics import f1_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+import cv2
 
 
 CFG = {
     'IMG_SIZE': 384,
-    'BATCH_SIZE': 8,
+    'BATCH_SIZE': 32,
     'SEED': 41
 }
 
@@ -49,6 +50,26 @@ class PadSquare(ImageOnlyTransform):
 
     def get_transform_init_args_names(self):
         return ("border_mode", "value")
+    
+class RandomCenterCrop(ImageOnlyTransform):
+    def __init__(self, min_size=75, max_size=200, always_apply=False, p=1.0):
+        # 명시적으로 p 값 전달
+        super(RandomCenterCrop, self).__init__(always_apply=always_apply, p=p)
+        self.min_size = min_size
+        self.max_size = max_size
+        # 초기화 시 p 값 확인
+    
+    def apply(self, img, **params):
+        h = np.random.randint(self.min_size, self.max_size)
+        w = np.random.randint(self.min_size, self.max_size)
+        crop = A.CenterCrop(height=h, width=w, pad_if_needed=True, p=1)
+        return crop(image=img)['image']
+    
+    def get_transform_init_args_names(self):
+        return ("min_size", "max_size", "p")
+    
+    def __str__(self):
+        return f"RandomCenterCrop(p={self.p}, min_size={self.min_size}, max_size={self.max_size})"
 
 class CustomDataset(Dataset):
     def __init__(self, img_path_list, label_list, transforms=None):
@@ -107,7 +128,7 @@ def inference(model, test_loader, device):
     return preds
 
 @torch.no_grad()
-def inference(data_loader, model, device):
+def tta_inference(data_loader, model, device, label_encoder):
     model.eval()
     preds = []
 
@@ -123,6 +144,69 @@ def inference(data_loader, model, device):
     
     preds = le.inverse_transform(preds)
 
+     # 이미지 경로 리스트
+    image_paths = data_loader.dataset.img_path_list
+    batch_size = CFG['BATCH_SIZE']
+    
+    # 메모리 캐시를 사용하여 이미지 로드 최적화
+    image_cache = {}
+    
+    # 배치 처리
+    for i in tqdm(range(0, len(image_paths), batch_size), desc="TTA Inference"):
+        batch_preds = []
+        batch_indices = range(i, min(i + batch_size, len(image_paths)))
+        
+        for tta_idx, tta_transform in enumerate(tta_transforms_list):
+            aug_images = []
+            
+            for idx in batch_indices:
+                img_path = image_paths[idx]
+                
+                # 이미지 캐싱 - 같은 경로의 이미지는 한 번만 읽음
+                if img_path not in image_cache:
+                    img = cv2.imread(img_path)
+                    if img is None:
+                        print(f"Warning: Could not read image {img_path}")
+                        continue
+                    image_cache[img_path] = img
+                else:
+                    img = image_cache[img_path]
+                
+                # Albumentations 변환 적용
+                transformed = tta_transform(image=img)
+                aug_img = transformed['image']
+                aug_images.append(aug_img)
+            
+            if not aug_images:
+                continue
+                
+            # 배치로 묶기
+            aug_images = torch.stack(aug_images).to(device)
+            
+            # 효율적인 배치 처리
+            with torch.no_grad():
+                output = model(aug_images)
+            
+            # 확률값 계산
+            if hasattr(output, 'logits'):
+                probs = torch.softmax(output.logits, dim=1)
+            else:
+                probs = torch.softmax(output, dim=1)
+                
+            batch_preds.append(probs)
+        
+        # 메모리 효율을 위해 배치별로 결과 계산
+        if batch_preds:
+            mean_preds = torch.mean(torch.stack(batch_preds), dim=0)
+            _, predicted = torch.max(mean_preds, 1)
+            preds.extend(predicted.cpu().numpy().tolist())
+        
+        # 메모리 관리: 일정 크기 이상이면 캐시 정리
+        if len(image_cache) > 100:  # 100개 이미지 이상 캐싱되면 정리
+            image_cache.clear()
+
+    # 레이블 디코딩
+    preds = label_encoder.inverse_transform(preds)
     return preds
 
 if __name__ == '__main__':
@@ -174,7 +258,7 @@ if __name__ == '__main__':
     checkpoint = torch.load(trained_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    preds = inference(test_loader, model, device)
+    preds = inference(model, test_loader, device)
     submit = pd.read_csv('../../sample_submission.csv')
 
     submit['rock_type'] = preds
