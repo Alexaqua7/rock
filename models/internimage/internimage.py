@@ -331,7 +331,7 @@ if __name__ == '__main__':
     for fold, (train_idx, val_idx) in enumerate(skf.split(df['img_path'], df['rock_type'])):
         if trained_path == "":
             idx = len([x for x in os.listdir('../../experiments') if x.startswith(model_name)])
-            experiment_name = f"{model_name.replace('.','_')}_fold_{fold+1}" # 실험이 저장될 folder 이름
+            experiment_name = f"{os.path.basename(model_name.replace('.','_'))}_fold_{fold+1}" # 실험이 저장될 folder 이름
         else:
             experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
         folder_path = os.path.join("../../experiments", experiment_name)
@@ -417,9 +417,8 @@ if __name__ == '__main__':
         for k, v in scheduler.state_dict().items():
             if k == 'params': continue
             config['train']['scheduler'][k] = v
-        experiment_dir = f"./experiments/{experiment_name}"
-        os.makedirs(experiment_dir, exist_ok=True)
-        config_path = os.path.join(experiment_dir, "config.json")
+        os.makedirs(folder_path, exist_ok=True)
+        config_path = os.path.join(folder_path, "config.json")
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=4)
 
