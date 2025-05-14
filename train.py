@@ -30,14 +30,18 @@ from loss import FocalLoss, weighted_normalized_CrossEntropyLoss, CenterLoss, Co
 import warnings
 import json
 from PIL import Image
+import platform
+import socket
+import getpass
+from torch.amp import autocast, GradScaler
 
 warnings.filterwarnings(action='ignore')
 
 CFG = {
-    'IMG_SIZE': 512,
+    'IMG_SIZE': 224,
     'EPOCHS': 15,
     'LEARNING_RATE': 3e-4,
-    'BATCH_SIZE': 2,
+    'BATCH_SIZE': 32,
     'SEED': 41
 }
 
@@ -48,11 +52,11 @@ def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
 
 class PadSquare(ImageOnlyTransform):
     def __init__(self, border_mode=0, value=0, always_apply=False, p=1.0):
-        super().__init__(always_apply, p)
+        super().__init__(always_apply=always_apply, p=p)
         self.border_mode = border_mode
         self.value = value
 
@@ -70,6 +74,9 @@ class PadSquare(ImageOnlyTransform):
 
     def get_transform_init_args_names(self):
         return ("border_mode", "value", "p")
+    
+    def __str__(self):
+        return f"PadSquare(p={self.p}, border_mode={self.border_mode}, value={self.value})"
 
 class RandomCenterCrop(ImageOnlyTransform):
     def __init__(self, min_size=75, max_size=200, always_apply=False, p=1.0):
@@ -114,7 +121,6 @@ class CustomDataset(Dataset):
 def train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=0, cur_epoch=1, experiment_name="base", folder_path = "base"):
     model.to(device)
     criterion = weighted_normalized_CrossEntropyLoss(return_weights=False).to(device)
-
     
     best_model = None
     save_path = os.path.join(folder_path, f"{experiment_name}-best.pth")
@@ -126,7 +132,7 @@ def train(model, optimizer, train_loader, val_loader, scheduler, device, class_n
         progress_bar = tqdm(iter(train_loader), desc=f"Epoch {epoch}/{CFG['EPOCHS']}")
         for imgs, labels in progress_bar:
             imgs = imgs.float().to(device)
-            labels = labels.to(device)
+            labels = labels.to(device).long()
 
             optimizer.zero_grad()
             output = model(imgs)
@@ -192,7 +198,7 @@ def validation(model, criterion, val_loader, device, class_names):
     with torch.no_grad():
         for imgs, labels in tqdm(iter(val_loader)):
             imgs = imgs.float().to(device)
-            labels = labels.to(device)
+            labels = labels.to(device).long()
 
             pred = model(imgs)
             loss = criterion(pred, labels)
@@ -240,9 +246,10 @@ if __name__ == '__main__':
     wandb.init(
         project="rock-classification",
         config=CFG,
-        name=experiment_name,
+        name=f"{experiment_name}_{socket.gethostname()}",
         # resume='must',
-        # id="ix1s49ay"
+        # id="ol7wbe3j",
+        entity = "alexseo-inha-university"
     )
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -268,23 +275,25 @@ if __name__ == '__main__':
     A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
     A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
     A.GaussNoise(std_range=(0.1,0.15), p=0.5),
-    A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-    A.ColorJitter(p=0.5),
+    A.CLAHE(p=0.5),
+    # A.RandomBrightnessContrast(p=0.4),
+    # A.GaussianBlur(blur_limit=(3, 5), sigma_limit = (0.5, 3), p=0.4),
+    A.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5)),
     ToTensorV2()
 ])
     test_transform = A.Compose([
         RandomCenterCrop(min_size=75, max_size=200, p=0.4),
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        A.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5)),
         ToTensorV2()
     ])
 
     train_dataset = CustomDataset(train_data['img_path'].values, train_data['rock_type'].values, train_transform)
-    train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=2)
+    train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=4, pin_memory=True, prefetch_factor=2)
 
     val_dataset = CustomDataset(val_data['img_path'].values, val_data['rock_type'].values, test_transform)
-    val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=2)
+    val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=4, pin_memory=True, prefetch_factor=2)
 
     model = timm.create_model(model_name, pretrained=True, num_classes=len(class_names))
     optimizer = torch.optim.Adam(params=model.parameters(), lr=CFG["LEARNING_RATE"])
@@ -318,6 +327,15 @@ if __name__ == '__main__':
     config['split'] = test_size
 
     config['seed'] = CFG['SEED']
+
+    config['system'] = {
+    'hostname': socket.gethostname(),
+    'username': getpass.getuser(),
+    'platform': platform.system(),
+    'platform-release': platform.release(),
+    'architecture': platform.machine(),
+    'processor': platform.processor(),
+    }
 
     for k, v in optimizer.state_dict()['param_groups'][0].items():
         if k == 'params': continue
