@@ -267,10 +267,10 @@ def validation(CFG, criterion, data_loader, model, device, class_names, epoch=No
     return _val_loss, _val_score, class_f1_dict, wandb_cm
 
 
-def train(CFG, model, criterion, train_loader, val_loader, optimizer, lr_scheduler, scaler, mixup_fn, class_names, model_ema=None, saved_name='model'):
+def train(CFG, model, criterion, train_loader, val_loader, optimizer, lr_scheduler, scaler, mixup_fn, class_names, model_ema=None, cur_epoch=1, folder_path="./", experiment_name= "model"):
     best_val_score = 0.0 # Validation 점수 기준으로 저장하기 위한 변수
 
-    for epoch in range(1, CFG['EPOCHS']+1):
+    for epoch in range(cur_epoch, CFG['EPOCHS']+1):
         train_loss = train_one_epoch(CFG, model, criterion, train_loader, optimizer, epoch, mixup_fn, lr_scheduler, amp_autocast, scaler, model_ema)
         _val_loss, _val_score, class_f1_dict, wandb_cm = validation(CFG, criterion, val_loader, model, device, class_names, epoch)
         print(f"Epoch {epoch}/{CFG['EPOCHS']} - Train Loss: {train_loss:.4f}, Val Loss: {_val_loss:.4f}, macro f1: {_val_score:.2f}%")
@@ -296,17 +296,17 @@ def train(CFG, model, criterion, train_loader, val_loader, optimizer, lr_schedul
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': lr_scheduler.state_dict(),
                 'best_val_accuracy': best_val_score
-            }, f"./best_{saved_name}.pth")
+            }, os.path.join(folder_path, f"best_{experiment_name}.pth"))
 
         # 마지막 에폭 모델 저장
         if epoch > 1:
-            os.remove(f"./{saved_name}_epoch{epoch - 1}.pth")
+            os.remove(os.path.join(folder_path, f"{experiment_name}-epoch{epoch-1}.pth"))
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': lr_scheduler.state_dict()
-        }, f"./{saved_name}_epoch{epoch}.pth")
+        }, os.path.join(folder_path, f"{experiment_name}-epoch{epoch}.pth"))
 
     wandb.finish()
 
@@ -316,7 +316,6 @@ if __name__ == '__main__':
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     trained_path = ''
     model_name = "../../weights/OpenGVLab/internimage_xl_22kto1k_384"
-    saved_name = "internimage_l_22kto1k_384"
     num_folds = CFG['kFold']  # K-Fold의 K 값 설정
 
     le = preprocessing.LabelEncoder()
@@ -329,21 +328,21 @@ if __name__ == '__main__':
 
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=CFG['SEED'])
     for fold, (train_idx, val_idx) in enumerate(skf.split(df['img_path'], df['rock_type'])):
+        trained_path = ""
+
         if trained_path == "":
             idx = len([x for x in os.listdir('../../experiments') if x.startswith(model_name)])
             experiment_name = f"{os.path.basename(model_name.replace('.','_'))}_fold_{fold+1}" # 실험이 저장될 folder 이름
         else:
             experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
         folder_path = os.path.join("../../experiments", experiment_name)
-
         wandb.init(
             project="rock-classification",
             config=CFG,
-            name=f"{saved_name}_fold_{fold+1}",
+            name=experiment_name,
             # resume='must',
             # id="38lkdqqs"
-        )
-
+            )
         seed_everything(CFG['SEED'])
 
         train_data = df.iloc[train_idx].copy().reset_index(drop=True)
@@ -429,8 +428,11 @@ if __name__ == '__main__':
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            cur_epoch = checkpoint['epoch'] + 1
+            train(CFG, model, torch.nn.CrossEntropyLoss(), train_loader, val_loader, optimizer, scheduler, scaler, mixup_fn=None, class_names=class_names, cur_epoch=cur_epoch, folder_path=folder_path, experiment_name=experiment_name)
 
-        train(CFG, model, torch.nn.CrossEntropyLoss(), train_loader, val_loader, optimizer, scheduler, scaler, mixup_fn=None, class_names=class_names, saved_name=saved_name)
+        else:
+            train(CFG, model, torch.nn.CrossEntropyLoss(), train_loader, val_loader, optimizer, scheduler, scaler, mixup_fn=None, class_names=class_names, folder_path=folder_path, experiment_name=experiment_name)
 
 
         wandb.finish()

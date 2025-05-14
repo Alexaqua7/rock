@@ -111,7 +111,7 @@ def inference(data_loader, model, device):
     model.eval()
     preds = []
 
-    progress_bar = tqdm(iter(data_loader), desc="Validation")
+    progress_bar = tqdm(iter(data_loader), desc="Inferencing")
     for idx, images in enumerate(progress_bar):
         if type(images) == list:
             images = [item.float().to(device) for item in images]
@@ -128,17 +128,19 @@ def inference(data_loader, model, device):
 if __name__ == '__main__':
     import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    trained_path = './best_internimage_l_22kto1k_384.pth'
-    model_name = "../../../weights/OpenGVLab/internimage_l_22kto1k_384"
-    saved_name = "internimage_l_22kto1k_384"
+    trained_path = '../../experiments/internimage_xl_22kto1k_384_fold_2/internimage_xl_22kto1k_384_fold_2_epoch5.pth'
+    model_name = "../../weights/OpenGVLab/internimage_xl_22kto1k_384"
+    saved_name = "internimage_xl_22kto1k_384"
+    folder_path = "/".join(trained_path.split("/")[:-1])
+    print(f"The model will be saved in {folder_path}", flush=True)
     model = AutoModelForImageClassification.from_pretrained(model_name, trust_remote_code=True)
 
     seed_everything(CFG['SEED'])
 
-    all_img_list = glob.glob('./train/*/*')
+    all_img_list = glob.glob('../../train/*/*')
     df = pd.DataFrame(columns=['img_path', 'rock_type'])
     df['img_path'] = all_img_list
-    df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[2])
+    df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[3])
 
     train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=0.3, stratify=df['rock_type'], random_state=CFG['SEED'])
 
@@ -158,14 +160,16 @@ if __name__ == '__main__':
     test_transform = A.Compose([
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2()
     ])
 
     test = pd.read_csv('../../test.csv')
 
+    test['img_path'] = test['img_path'].apply(lambda x: os.path.join("../../", x[2:]))
+
     test_dataset = CustomDataset(test['img_path'].values, None, test_transform)
-    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=16)
 
     checkpoint = torch.load(trained_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -175,4 +179,4 @@ if __name__ == '__main__':
 
     submit['rock_type'] = preds
 
-    submit.to_csv(f"./{saved_name}_submit_{checkpoint['epoch']}epoch.csv", index=False)
+    submit.to_csv(os.path.join(folder_path, f"{saved_name}_submit_{checkpoint['epoch']}epoch.csv"), index=False)
