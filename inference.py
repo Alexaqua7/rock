@@ -106,7 +106,7 @@ def inference(model, test_loader, device):
 
 if __name__ == '__main__':
     model_name = "davit_base"
-    saved_name = f"./experiments/davit_base_1/davit_base_1-best.pth" # Inference할 모델의 가중치 경로를 입력하세요
+    saved_name = f"./experiments/davit_base_7/davit_base_7-best.pth" # Inference할 모델의 가중치 경로를 입력하세요
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     seed_everything(CFG['SEED']) # Seed 고정
 
@@ -124,8 +124,8 @@ if __name__ == '__main__':
 
     test_transform = A.Compose([
         PadSquare(value=(0, 0, 0)),
-        A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        # A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
+        # A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ToTensorV2()
 ])
 
@@ -135,6 +135,26 @@ if __name__ == '__main__':
     test_dataset = CustomDataset(test['img_path'].values, None, test_transform)
     test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=0)
 
+    import matplotlib.pyplot as plt
+
+# train_dataset은 CustomDataset 객체입니다.
+# transforms 포함된 상태
+
+    for i in range(2):  # 원하는 이미지 개수만큼 반복
+        img  = test_dataset[i]  # 이미지와 라벨 로드
+        img = img.permute(1, 2, 0).numpy()  # CHW → HWC 변환
+        # img = (img * 0.5 + 0.5).clip(0, 1)
+        # 정규화 해제 (mean=0.5, std=0.5로 normalize 했으므로 반대로)
+        # img = (img * 0.5) + 0.5
+        # img = (img * 255).astype('uint8')
+
+        plt.figure(figsize=(4, 4))
+        plt.imshow(img)
+        plt.title(f"Label:")
+        plt.axis('off')
+        plt.show()
+
+    assert(False)
     # 모델 정의
     model = timm.create_model(model_name, pretrained=True, num_classes=7).to(device)
     checkpoint = torch.load(saved_name, map_location=device)

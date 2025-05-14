@@ -41,11 +41,12 @@ warnings.filterwarnings(action='ignore')
 
 # Default config (will be overridden by sweep)
 CFG = {
-    'IMG_SIZE': 224,
+    'IMG_SIZE': 448,
     'EPOCHS': 15,
     'LEARNING_RATE': 3e-4,
-    'WEIGHT_DECAY': 1e-4,
-    'BATCH_SIZE': 32,
+    'BATCH_SIZE': 8,
+    'ACCUMULATION_STEPS': 8,
+    'MIN_LR': 1e-8,
     'SEED': 41
 }
 
@@ -162,7 +163,7 @@ def train(model, optimizer, train_loader, val_loader, scheduler, device, class_n
     best_model = None
     save_path = os.path.join(folder_path, f"{experiment_name}-best.pth")
 
-    for epoch in range(cur_epoch, CFG['EPOCHS'] + 1):
+    for epoch in range(cur_epoch, 2):
         model.train()
         train_loss = []
 
@@ -273,18 +274,14 @@ def train_single_run():
     wandb.init()
     
     # Update config with wandb values
-    CFG['LEARNING_RATE'] = wandb.config.learning_rate
-    CFG['WEIGHT_DECAY'] = wandb.config.weight_decay
-    CFG['IMG_SIZE'] = wandb.config.img_size
-    CFG['BATCH_SIZE'] = wandb.config.batch_size 
-    CFG['EPOCHS'] = wandb.config.epochs
-    CFG['SEED'] = wandb.config.seed
-    model_name = wandb.config.model_name
+    CFG['LEARNING_RATE'] = wandb.config.LEARNING_RATE
+    CFG['MIN_LR'] = wandb.config.MIN_LR
+    model_name = 'vit_so150m2_patch16_reg1_gap_448.sbb_e200_in12k_ft_in1k'
     
     test_size = 0.3
     
     # Create experiment name based on sweep parameters
-    experiment_name = f"{model_name.replace('.','_')}_lr{CFG['LEARNING_RATE']}_wd{CFG['WEIGHT_DECAY']}"
+    experiment_name = f"{model_name.replace('.','_')}_lr{CFG['LEARNING_RATE']:.2e}_acc{CFG['ACCUMULATION_STEPS']}"
     folder_path = os.path.join("./experiments", experiment_name)
     os.makedirs(folder_path, exist_ok=True)
 
@@ -296,6 +293,7 @@ def train_single_run():
     df['img_path'] = all_img_list
     df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[2])
 
+    df, _, _, _ = train_test_split(df, df['rock_type'], test_size=0.98, stratify=df['rock_type'], random_state=CFG['SEED'])
     train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=test_size, stratify=df['rock_type'], random_state=CFG['SEED'])
 
     le = preprocessing.LabelEncoder()
@@ -336,10 +334,9 @@ def train_single_run():
     optimizer = torch.optim.AdamW(
         params=model.parameters(), 
         lr=CFG["LEARNING_RATE"],
-        weight_decay=CFG["WEIGHT_DECAY"]
     )
     
-    scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=1e-8)
+    scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=CFG['MIN_LR'])
 
     wandb.config.update({
         "optimizer": optimizer.__class__.__name__,
@@ -356,7 +353,6 @@ def train_single_run():
 
     config['train']['epoch'] = CFG['EPOCHS']
     config['train']['lr'] = CFG['LEARNING_RATE']
-    config['train']['weight_decay'] = CFG['WEIGHT_DECAY']
     config['train']['train_transform'] = [str(x) for x in train_transform]
     config['train']['optimizer'] = {}
     config['train']['optimizer']['name'] = optimizer.__class__.__name__
@@ -399,10 +395,10 @@ def train_single_run():
 def main():
     parser = argparse.ArgumentParser(description='Run training with wandb sweep or single run')
     parser.add_argument('--mode', type=str, choices=['sweep', 'single'], default='sweep', help='Run mode: sweep or single training')
-    parser.add_argument('--project', type=str, default='rock-classification', help='wandb project name')
+    parser.add_argument('--project', type=str, default='vit_so150m2_sweep', help='wandb project name')
     parser.add_argument('--entity', type=str, default='alexseo-inha-university', help='wandb entity name')
-    parser.add_argument('--count', type=int, default=10, help='number of sweep runs to execute')
-    parser.add_argument('--config', type=str, default=None, help='sweep configuration file (optional)')
+    parser.add_argument('--count', type=int, default=15, help='number of sweep runs to execute')
+    parser.add_argument('--config', type=str, default="sweep.yaml", help='sweep configuration file (optional)')
     args = parser.parse_args()
     
     if args.mode == 'sweep':
@@ -412,7 +408,7 @@ def main():
                 sweep_config = yaml.safe_load(file)
         else:
             print("Using default sweep configuration")
-            sweep_config = DEFAULT_SWEEP_CONFIG
+            # sweep_config = DEFAULT_SWEEP_CONFIG
             
             # Save the default config to a file for reference
             with open('default_sweep_config.yaml', 'w') as file:
@@ -435,12 +431,12 @@ def main():
         wandb.init(project=args.project, entity=args.entity)
         wandb.config.update({
             'learning_rate': CFG['LEARNING_RATE'],
-            'weight_decay': CFG['WEIGHT_DECAY'],
             'img_size': CFG['IMG_SIZE'],
-            'batch_size': CFG['BATCH_SIZE'],
             'epochs': CFG['EPOCHS'],
+            'min_lr': CFG['MIN_LR'],
+            'accumulation_steps': CFG['ACCUMULATION_STEPS'],
             'seed': CFG['SEED'],
-            'model_name': 'davit_base'
+            'model_name': 'vit_so400m_patch14_siglip_378.v2_webli'
         })
         train_single_run()
 

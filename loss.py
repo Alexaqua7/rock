@@ -46,7 +46,7 @@ def weighted_normalized_CrossEntropyLoss(return_weights = False):
     # Min-Max 정규화 (1~2 사이로 조정)
     min_val = raw_weights.min()
     max_val = raw_weights.max()
-    normalized_weights = 1 + (raw_weights - min_val) / (max_val - min_val)  # 범위를 [1, 2]로 조정
+    normalized_weights = 1 + 0.5*(raw_weights - min_val) / (max_val - min_val)  # 범위를 [1, 2]로 조정
 
     # GPU로 이동
     weights = normalized_weights

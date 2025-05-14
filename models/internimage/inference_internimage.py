@@ -21,11 +21,12 @@ import wandb
 from sklearn.metrics import f1_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+import cv2
 
 
 CFG = {
     'IMG_SIZE': 384,
-    'BATCH_SIZE': 8,
+    'BATCH_SIZE': 32,
     'SEED': 41
 }
 
@@ -49,6 +50,26 @@ class PadSquare(ImageOnlyTransform):
 
     def get_transform_init_args_names(self):
         return ("border_mode", "value")
+    
+class RandomCenterCrop(ImageOnlyTransform):
+    def __init__(self, min_size=75, max_size=200, always_apply=False, p=1.0):
+        # 명시적으로 p 값 전달
+        super(RandomCenterCrop, self).__init__(always_apply=always_apply, p=p)
+        self.min_size = min_size
+        self.max_size = max_size
+        # 초기화 시 p 값 확인
+    
+    def apply(self, img, **params):
+        h = np.random.randint(self.min_size, self.max_size)
+        w = np.random.randint(self.min_size, self.max_size)
+        crop = A.CenterCrop(height=h, width=w, pad_if_needed=True, p=1)
+        return crop(image=img)['image']
+    
+    def get_transform_init_args_names(self):
+        return ("min_size", "max_size", "p")
+    
+    def __str__(self):
+        return f"RandomCenterCrop(p={self.p}, min_size={self.min_size}, max_size={self.max_size})"
 
 class CustomDataset(Dataset):
     def __init__(self, img_path_list, label_list, transforms=None):
@@ -107,38 +128,120 @@ def inference(model, test_loader, device):
     return preds
 
 @torch.no_grad()
-def inference(data_loader, model, device):
+def tta_inference(data_loader, model, device, label_encoder):
     model.eval()
     preds = []
 
-    progress_bar = tqdm(iter(data_loader), desc="Validation")
-    for idx, images in enumerate(progress_bar):
-        if type(images) == list:
-            images = [item.float().to(device) for item in images]
-        else:
-            images = images.float().to(device)
-        output = model(images)
-        _, predicted = torch.max(output.logits, 1)
-        preds.extend(predicted.cpu().numpy().tolist())
-    
-    preds = le.inverse_transform(preds)
+    # 5개의 TTA 조합 정의
+    tta_transforms_list = [
+        A.Compose([  # 원본
+            PadSquare(value=(0, 0, 0)),
+            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ]),
+        A.Compose([  # HorizontalFlip
+            PadSquare(value=(0, 0, 0)),
+            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
+            A.HorizontalFlip(p=1.0),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ]),
+        A.Compose([  # VerticalFlip
+            PadSquare(value=(0, 0, 0)),
+            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
+            A.VerticalFlip(p=1.0),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ]),
+        A.Compose([  # GaussianNoise
+            PadSquare(value=(0, 0, 0)),
+            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
+            A.CLAHE(p=0.5),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ])
+    ]
 
+     # 이미지 경로 리스트
+    image_paths = data_loader.dataset.img_path_list
+    batch_size = CFG['BATCH_SIZE']
+    
+    # 메모리 캐시를 사용하여 이미지 로드 최적화
+    image_cache = {}
+    
+    # 배치 처리
+    for i in tqdm(range(0, len(image_paths), batch_size), desc="TTA Inference"):
+        batch_preds = []
+        batch_indices = range(i, min(i + batch_size, len(image_paths)))
+        
+        for tta_idx, tta_transform in enumerate(tta_transforms_list):
+            aug_images = []
+            
+            for idx in batch_indices:
+                img_path = image_paths[idx]
+                
+                # 이미지 캐싱 - 같은 경로의 이미지는 한 번만 읽음
+                if img_path not in image_cache:
+                    img = cv2.imread(img_path)
+                    if img is None:
+                        print(f"Warning: Could not read image {img_path}")
+                        continue
+                    image_cache[img_path] = img
+                else:
+                    img = image_cache[img_path]
+                
+                # Albumentations 변환 적용
+                transformed = tta_transform(image=img)
+                aug_img = transformed['image']
+                aug_images.append(aug_img)
+            
+            if not aug_images:
+                continue
+                
+            # 배치로 묶기
+            aug_images = torch.stack(aug_images).to(device)
+            
+            # 효율적인 배치 처리
+            with torch.no_grad():
+                output = model(aug_images)
+            
+            # 확률값 계산
+            if hasattr(output, 'logits'):
+                probs = torch.softmax(output.logits, dim=1)
+            else:
+                probs = torch.softmax(output, dim=1)
+                
+            batch_preds.append(probs)
+        
+        # 메모리 효율을 위해 배치별로 결과 계산
+        if batch_preds:
+            mean_preds = torch.mean(torch.stack(batch_preds), dim=0)
+            _, predicted = torch.max(mean_preds, 1)
+            preds.extend(predicted.cpu().numpy().tolist())
+        
+        # 메모리 관리: 일정 크기 이상이면 캐시 정리
+        if len(image_cache) > 100:  # 100개 이미지 이상 캐싱되면 정리
+            image_cache.clear()
+
+    # 레이블 디코딩
+    preds = label_encoder.inverse_transform(preds)
     return preds
 
 if __name__ == '__main__':
     import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    trained_path = './best_internimage_l_22kto1k_384.pth'
-    model_name = "../../../weights/OpenGVLab/internimage_l_22kto1k_384"
-    saved_name = "internimage_l_22kto1k_384"
+    trained_path = 'C:/Users/Windows/Desktop/Rock/rock/internimage_xl_22kto1k_384_fold_1-epoch20.pth'
+    model_name = "../../weights/OpenGVLab/internimage_xl_22kto1k_384"
+    saved_name = "internimage_xl_22kto1k_384"
     model = AutoModelForImageClassification.from_pretrained(model_name, trust_remote_code=True)
 
     seed_everything(CFG['SEED'])
 
-    all_img_list = glob.glob('./train/*/*')
+    all_img_list = glob.glob('../../train/*/*')
     df = pd.DataFrame(columns=['img_path', 'rock_type'])
     df['img_path'] = all_img_list
-    df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[2])
+    df['rock_type'] = df['img_path'].apply(lambda x : str(x).replace('\\','/').split('/')[3])
 
     train_data, val_data, _, _ = train_test_split(df, df['rock_type'], test_size=0.3, stratify=df['rock_type'], random_state=CFG['SEED'])
 
@@ -158,21 +261,21 @@ if __name__ == '__main__':
     test_transform = A.Compose([
         PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-        A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2()
     ])
 
     test = pd.read_csv('../../test.csv')
-
-    test_dataset = CustomDataset(test['img_path'].values, None, test_transform)
-    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=0)
+    test['img_path'] = test['img_path'].apply(lambda x: os.path.join("../../", x[2:]))
+    test_dataset = CustomDataset(test['img_path'].values, None, transforms = None)
+    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=4)
 
     checkpoint = torch.load(trained_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    preds = inference(test_loader, model, device)
+    preds = tta_inference(test_loader, model, device, le)
     submit = pd.read_csv('../../sample_submission.csv')
 
     submit['rock_type'] = preds
 
-    submit.to_csv(f"./{saved_name}_submit_{checkpoint['epoch']}epoch.csv", index=False)
+    submit.to_csv(f"./TTA{saved_name}_submit.csv", index=False)
