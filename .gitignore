@@ -13,3 +13,6 @@
 *.jpg
 *.png
 *.zip
+/weights/*
+/wandb/*
+*.npy
