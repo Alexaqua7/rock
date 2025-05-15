@@ -132,36 +132,17 @@ def tta_inference(data_loader, model, device, label_encoder):
     model.eval()
     preds = []
 
-    # 5개의 TTA 조합 정의
-    tta_transforms_list = [
-        A.Compose([  # 원본
-            PadSquare(value=(0, 0, 0)),
-            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2()
-        ]),
-        A.Compose([  # HorizontalFlip
-            PadSquare(value=(0, 0, 0)),
-            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-            A.HorizontalFlip(p=1.0),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2()
-        ]),
-        A.Compose([  # VerticalFlip
-            PadSquare(value=(0, 0, 0)),
-            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-            A.VerticalFlip(p=1.0),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2()
-        ]),
-        A.Compose([  # GaussianNoise
-            PadSquare(value=(0, 0, 0)),
-            A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
-            A.CLAHE(p=0.5),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2()
-        ])
-    ]
+    progress_bar = tqdm(iter(data_loader), desc="Inferencing")
+    for idx, images in enumerate(progress_bar):
+        if type(images) == list:
+            images = [item.float().to(device) for item in images]
+        else:
+            images = images.float().to(device)
+        output = model(images)
+        _, predicted = torch.max(output.logits, 1)
+        preds.extend(predicted.cpu().numpy().tolist())
+    
+    preds = le.inverse_transform(preds)
 
      # 이미지 경로 리스트
     image_paths = data_loader.dataset.img_path_list
@@ -231,9 +212,11 @@ def tta_inference(data_loader, model, device, label_encoder):
 if __name__ == '__main__':
     import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    trained_path = 'C:/Users/Windows/Desktop/Rock/rock/internimage_xl_22kto1k_384_fold_1-epoch20.pth'
+    trained_path = '../../experiments/internimage_xl_22kto1k_384_fold_2/internimage_xl_22kto1k_384_fold_2_epoch5.pth'
     model_name = "../../weights/OpenGVLab/internimage_xl_22kto1k_384"
     saved_name = "internimage_xl_22kto1k_384"
+    folder_path = "/".join(trained_path.split("/")[:-1])
+    print(f"The model will be saved in {folder_path}", flush=True)
     model = AutoModelForImageClassification.from_pretrained(model_name, trust_remote_code=True)
 
     seed_everything(CFG['SEED'])
@@ -266,16 +249,18 @@ if __name__ == '__main__':
     ])
 
     test = pd.read_csv('../../test.csv')
+
     test['img_path'] = test['img_path'].apply(lambda x: os.path.join("../../", x[2:]))
-    test_dataset = CustomDataset(test['img_path'].values, None, transforms = None)
-    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=4)
+
+    test_dataset = CustomDataset(test['img_path'].values, None, test_transform)
+    test_loader = DataLoader(test_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=16)
 
     checkpoint = torch.load(trained_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    preds = tta_inference(test_loader, model, device, le)
+    preds = inference(model, test_loader, device)
     submit = pd.read_csv('../../sample_submission.csv')
 
     submit['rock_type'] = preds
 
-    submit.to_csv(f"./TTA{saved_name}_submit.csv", index=False)
+    submit.to_csv(os.path.join(folder_path, f"{saved_name}_submit_{checkpoint['epoch']}epoch.csv"), index=False)
