@@ -457,7 +457,7 @@ class Trainer:
         start_epoch = 1
         best_score = 0.0
         if self.config.get('TRAINED_PATH', "") != "":
-            checkpoint = torch.load(self.config.get['TRAINED_PATH'], map_location=self.device)
+            checkpoint = torch.load(self.config.get('TRAINED_PATH'), map_location=self.device)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
@@ -558,7 +558,6 @@ class Trainer:
 
         dataset = self.init_dataset('train')
         le = dataset['le']
-        model = self.init_model(dataset['num_classes'])
         test_dataset = self.init_dataset('test')
         test_loader = self.init_loader('test', test_dataset)['test_loader']
         model.to(self.device).eval()

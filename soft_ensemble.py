@@ -35,7 +35,7 @@ warnings.filterwarnings(action='ignore')
 CFG = {
     'SEED': 41,
     'IMG_SIZE': 224,
-    'BATCH_SIZE': 32,
+    'BATCH_SIZE': 16,
     'NUM_CLASSES': 7
 }
 
@@ -111,8 +111,6 @@ def soft_voting_inference(models, test_img_paths, device, transforms_list, model
             for img_path in batch_img_paths:
                 # OpenCV로 이미지 로드 (BGR 형식)
                 img = cv2.imread(img_path)
-                # BGR -> RGB 변환
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 # 모델별 transform 적용
                 transformed_img = transforms_list[model_idx](image=img)['image']
                 batch_imgs.append(transformed_img)
@@ -124,12 +122,15 @@ def soft_voting_inference(models, test_img_paths, device, transforms_list, model
             model_type = model_types[model_idx]
             if model_type == "timm":
                 output = model(batch_tensor)
+                output = F.softmax(output, dim=1)
             elif model_type == "transformers":
-                # transformers 모델은 output.logits 형태로 결과 반환
                 output = model(batch_tensor)
+                # transformers 모델은 output.logits 형태로 결과 반환
+                if hasattr(output, 'logits'):
+                    output = torch.softmax(output.logits, dim=1)
+                else:
+                    output = torch.softmax(output, dim=1)
                 
-            
-            output = F.softmax(output, dim=1)
             outputs.append(output)
         
         # 예측 확률을 평균
@@ -157,21 +158,23 @@ if __name__ == '__main__':
 
     # 모델 정의
     model_names = [
-        "vit_so150m2_patch16_reg1_gap_384.sbb_e200_in12k_ft_in1k",  # 첫 번째 모델 이름
-        "mambaout_base_plus_rw.sw_e150_r384_in12k_ft_in1k",  # 두 번째 모델 이름
-        "davit_base",  # 세 번째 모델 이름
-        "internimage_xl_22kto1k_384"  # 네 번째 모델 이름 (InternImage)
+        "mambaout_base_plus_rw.sw_e150_r384_in12k_ft_in1k",  # 첫 번째 모델 이름
+        "mambaout_base_plus_rw.sw_e150_r384_in12k_ft_in1k",  # 두 번째 모델 이름, # 세 번째 모델 이름
+        "internimage_xl_22kto1k_384",  # 네 번째 모델 이름 (InternImage)
+        "internimage_xl_22kto1k_384",
+        "internimage_xl_22kto1k_384"
     ]
     
     saved_names = [
-        "vit_so150m2_patch16_reg1_gap_384_sbb_e200_in12k_ft_in1k_2-best.pth",  # 첫 번째 모델 가중치 경로
-        "mambaout_base_plus_rw_sw_e150_r384_in12k_ft_in1k_5_kfold5-fold1-epoch_18.pth",  # 두 번째 모델 가중치 경로
-        "davit_base_22-best.pth",  # 세 번째 모델 가중치 경로
+        "mambaout_base_plus_rw_sw_e150_r384_in12k_ft_in1k_1-epoch_18.pth",  # 첫 번째 모델 가중치 경로
+        "mambaout_base_plus_rw_sw_e150_r384_in12k_ft_in1k_5_kfold5-fold1-epoch_18.pth",  # 두 번째 모델 가중치 경로  # 세 번째 모델 가중치 경로
         "internimage_xl_22kto1k_384_fold_1-epoch20.pth",  # 네 번째 모델 가중치 경로 (InternImage)
+        "best_internimage_xl_22kto1k_384_fold_5.pth",  # 두 번째 모델 가중치 경로
+        "best_internimage_xl_22kto1k_384_fold_2.pth"
     ]
     
     # 모델 타입 지정 (timm 또는 transformers)
-    model_types = ["timm", "timm", "timm", "transformers"]
+    model_types = ["timm", "timm", "transformers","transformers","transformers"]
     
     # 각각의 모델에 맞는 transform을 설정합니다.
     test_transforms = [
@@ -185,14 +188,19 @@ if __name__ == '__main__':
             A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
             ToTensorV2()
         ]),
-        A.Compose([  # 세 번째 모델의 transform (384 사이즈, 다른 normalize)
-            A.Resize(224, 224),
-            A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-            ToTensorV2()
-        ]),
         A.Compose([  # 네 번째 모델의 transform (384 사이즈, InternImage normalize)
             A.Resize(384, 384),
             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ]),
+         A.Compose([  # 두 번째 모델의 transform (384 사이즈, 다른 normalize)
+            A.Resize(384, 384),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ]),
+        A.Compose([  # 세 번째 모델의 transform (384 사이즈, 다른 normalize)
+            A.Resize(384, 384),
+            A.Normalize((0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ToTensorV2()
         ])
     ]
@@ -257,7 +265,7 @@ if __name__ == '__main__':
     submit['rock_type'] = preds_decoded
     
     # 저장 경로 설정
-    output_path = f"./ensemble_results/soft_voting_submit_{CFG['SEED']}_with_internimage.csv"
+    output_path = f"./ensemble_results/soft_voting_submit_{CFG['SEED']}_7_models.csv"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     submit.to_csv(output_path, index=False)
     
