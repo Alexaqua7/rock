@@ -37,13 +37,18 @@ import uuid
 import getpass
 import requests # 임시
 warnings.filterwarnings(action='ignore')
+import torch.nn as nn
+from torch.utils.data import WeightedRandomSampler, Sampler
 
 CFG = {
     'IMG_SIZE': 224,
     'EPOCHS': 15,
     'LEARNING_RATE': 3e-6,
     'BATCH_SIZE': 32,
-    'SEED': 41
+    'SEED': 41,
+    'ACCUMULATION_STEPS': 2,
+    'HARD_NEGATIVE_RATIO': 0.2,
+    'HARD_NEGATIVE_MEMORY_SIZE': 1000
 }
 
 def seed_everything(seed):
@@ -141,64 +146,220 @@ class CustomDataset(Dataset):
         cv2.imwrite(save_path, img_bgr)
         print(f"변환된 이미지 저장 완료: {save_path}")
 
-def train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=0, cur_epoch=1, experiment_name="base", folder_path = "base", class_counts=None, accumulation_steps=1):
+class HardNegativeMiner:
+    def __init__(self, dataset_size, memory_size=1000):
+        self.hard_negative_indices = set()
+        self.hard_negative_scores = {}  # 각 샘플의 손실값 저장
+        self.memory_size = memory_size
+        self.dataset_size = dataset_size
+    
+    def update(self, indices, losses):
+        """
+        손실값이 높은 샘플들을 하드 네거티브로 추가
+        
+        Args:
+            indices: 샘플 인덱스 리스트
+            losses: 각 샘플의 손실값 리스트
+        """
+        # 인덱스와 손실값 매핑
+        for idx, loss in zip(indices, losses):
+            self.hard_negative_scores[idx] = loss.item()
+        
+        # 손실값 기준으로 정렬하여 상위 memory_size개만 유지
+        sorted_items = sorted(self.hard_negative_scores.items(), 
+                              key=lambda x: x[1], reverse=True)
+        
+        if len(sorted_items) > self.memory_size:
+            sorted_items = sorted_items[:self.memory_size]
+        
+        # 새로운 하드 네거티브 인덱스 집합 구성
+        self.hard_negative_indices = set([idx for idx, _ in sorted_items])
+        self.hard_negative_scores = {idx: loss for idx, loss in sorted_items}
+    
+    def get_hard_negatives(self, count):
+        """
+        하드 네거티브 샘플에서 'count'만큼 샘플링
+        
+        Args:
+            count: 필요한 하드 네거티브 샘플 수
+            
+        Returns:
+            선택된 하드 네거티브 인덱스 리스트
+        """
+        if not self.hard_negative_indices:
+            # 하드 네거티브 샘플이 없으면 랜덤 인덱스 반환
+            return random.sample(range(self.dataset_size), min(count, self.dataset_size))
+        
+        # 가중치 기반 샘플링을 위한 준비
+        indices = list(self.hard_negative_indices)
+        weights = [self.hard_negative_scores[idx] for idx in indices]
+        
+        # 가중치 정규화
+        weights = np.array(weights)
+        weights = weights / np.sum(weights)
+        
+        # 가중치 기반 샘플링
+        if len(indices) <= count:
+            return indices
+        else:
+            return np.random.choice(indices, count, replace=False, p=weights).tolist()
+
+class BalancedHardNegativeBatchSampler(Sampler):
+    def __init__(self, dataset_size, batch_size, hard_negative_miner, labels, num_classes, hard_negative_ratio=0.3):
+        """
+        하드 네거티브 샘플과 클래스 균형이 맞는 랜덤 샘플을 혼합하여 배치를 구성하는 샘플러
+        
+        Args:
+            dataset_size: 데이터셋 크기
+            batch_size: 배치 크기
+            hard_negative_miner: 하드 네거티브 마이너 인스턴스
+            labels: 각 샘플의 클래스 레이블 (numpy array)
+            num_classes: 클래스 수
+            hard_negative_ratio: 배치에서 하드 네거티브 샘플의 비율 (0~1)
+        """
+        self.dataset_size = dataset_size
+        self.batch_size = batch_size
+        self.hard_negative_miner = hard_negative_miner
+        self.labels = labels
+        self.num_classes = num_classes
+        self.hard_negative_ratio = hard_negative_ratio
+        
+        # 배치당 하드 네거티브 샘플 수
+        self.hard_negative_per_batch = int(batch_size * hard_negative_ratio)
+        self.random_per_batch = batch_size - self.hard_negative_per_batch
+        
+        # 클래스별 인덱스 구성
+        self.class_indices = [[] for _ in range(num_classes)]
+        for idx, label in enumerate(labels):
+            self.class_indices[label].append(idx)
+        
+        # 에포크당 배치 수 계산
+        self.num_batches = (dataset_size + batch_size - 1) // batch_size
+        
+    def __iter__(self):
+        # 클래스별 인덱스 섞기
+        for class_idx in range(self.num_classes):
+            random.shuffle(self.class_indices[class_idx])
+        
+        # 각 클래스별 현재 인덱스 위치 초기화
+        class_positions = [0] * self.num_classes
+        
+        for _ in range(self.num_batches):
+            # 하드 네거티브 샘플 선택
+            hard_indices = self.hard_negative_miner.get_hard_negatives(self.hard_negative_per_batch)
+            hard_indices_set = set(hard_indices)
+            
+            # 클래스별로 균등하게 샘플 선택
+            samples_per_class = self.random_per_batch // self.num_classes
+            remaining_samples = self.random_per_batch % self.num_classes
+            
+            balanced_indices = []
+            
+            # 각 클래스에서 samples_per_class 개의 샘플 선택
+            for class_idx in range(self.num_classes):
+                class_samples_needed = samples_per_class + (1 if class_idx < remaining_samples else 0)
+                if class_samples_needed == 0:
+                    continue
+                
+                selected_indices = []
+                checked_indices = 0
+                class_indices = self.class_indices[class_idx]
+                
+                # 이미 선택된 하드 네거티브와 중복되지 않는 샘플 선택
+                while len(selected_indices) < class_samples_needed and checked_indices < len(class_indices):
+                    pos = (class_positions[class_idx] + checked_indices) % len(class_indices)
+                    idx = class_indices[pos]
+                    checked_indices += 1
+                    
+                    if idx not in hard_indices_set:
+                        selected_indices.append(idx)
+                
+                # 충분한 샘플이 없으면 하드 네거티브와 중복 허용
+                if len(selected_indices) < class_samples_needed:
+                    additional_needed = class_samples_needed - len(selected_indices)
+                    # 무작위로 해당 클래스에서 추가 샘플 선택
+                    additional_indices = random.sample(
+                        class_indices, 
+                        min(additional_needed, len(class_indices))
+                    )
+                    selected_indices.extend(additional_indices)
+                
+                # 다음 에포크를 위해 클래스 위치 업데이트
+                class_positions[class_idx] = (class_positions[class_idx] + len(selected_indices)) % len(class_indices)
+                balanced_indices.extend(selected_indices)
+            
+            # 하드 네거티브와 균형 잡힌 샘플 합치기
+            batch_indices = hard_indices + balanced_indices
+            random.shuffle(batch_indices)  # 배치 내에서도 섞기
+            
+            yield batch_indices
+    
+    def __len__(self):
+        return self.num_batches
+
+def hard_negative_train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, criterion=nn.CrossEntropyLoss(reduction='none'), hard_negative_miner=None, best_score=0, epochs=15, cur_epoch=1, experiment_name="base", folder_path="base", accumulation_steps=1):
     model.to(device)
-
-    label_smoothing = 0.1
-    factor = 1
-    criterion = weighted_normalized_CrossEntropyLoss(class_counts=class_counts, return_weights=False, label_smoothing=label_smoothing, factor=factor).to(device)
-
-    config_path = os.path.join(folder_path, "config2.json")
-
-    # 1. config 파일 불러오기
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-
-    # 2. loss 이름 및 class weight 추가
-    weights = weighted_normalized_CrossEntropyLoss(class_counts, return_weights=True).to(device)
-    config['train']['loss'] = {
-        'name': weighted_normalized_CrossEntropyLoss.__name__,
-        'label_smoothing': label_smoothing,
-        'factor': factor,
-        'class_weights': {k: round(v, 6) for k, v in zip(class_counts.keys(), weights.tolist())}
-    }
-
-    # 3. 수정된 config 다시 저장
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=4)
-
     
     best_model = None
     save_path = os.path.join(folder_path, f"{experiment_name}-best.pth")
-
-    for epoch in range(cur_epoch, CFG['EPOCHS'] + 1):
+    
+    for epoch in range(cur_epoch, epochs + 1):
         model.train()
         train_loss = []
-
         optimizer.zero_grad()
-
-        progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f"Epoch {epoch}/{CFG['EPOCHS']}")
-        for step, (imgs, labels) in progress_bar:
+        
+        # 그래디언트 누적을 위한 배치 손실 및 인덱스 저장소
+        accumulated_indices = []
+        accumulated_losses = []
+        
+        progress_bar = tqdm(enumerate(iter(train_loader)), total=len(train_loader), desc=f"Epoch {epoch}/{epochs}")
+        for step, batch in progress_bar:
+            if len(batch) == 3:  # 인덱스 포함하는 경우
+                imgs, labels, indices = batch
+            else:
+                imgs, labels = batch
+                indices = None
+            
             imgs = imgs.float().to(device)
-            labels = labels.to(device)
             inputs = {'pixel_values':imgs}
+            labels = labels.to(device).long()
 
-            optimizer.zero_grad()
             outputs = model(**inputs)
             logits = outputs.logits
-            loss = criterion(logits, labels)
+            
+            # 샘플별 손실값 계산 - 원래 스케일 유지 (accumulation_steps로 나누지 않음)
+            sample_losses = criterion(logits, labels)
+            loss = sample_losses.mean() / accumulation_steps  # 그래디언트 스케일링을 위해서만 나눔
 
-            loss = loss / accumulation_steps  # 손실값 축소
+            # 역전파 수행
             loss.backward()
+            
+            # 현재 배치의 손실값과 인덱스 저장
+            if indices is not None:
+                accumulated_indices.extend(indices.cpu().numpy())
+                accumulated_losses.extend(sample_losses.detach().cpu())
 
+            train_loss.append(loss.item() * accumulation_steps)  # 원래 손실값 저장 (scaling 제거)
+            
+            # 그래디언트 업데이트 및 하드 네거티브 마이너 업데이트
             if (step + 1) % accumulation_steps == 0 or (step + 1) == len(train_loader):
+                # 옵티마이저 스텝
                 optimizer.step()
                 optimizer.zero_grad()
+                
+                # 누적된 배치들에 대한 하드 네거티브 마이너 업데이트
+                if hard_negative_miner is not None and accumulated_indices:
+                    hard_negative_miner.update(accumulated_indices, accumulated_losses)
+                
+                # 누적 저장소 초기화
+                accumulated_indices = []
+                accumulated_losses = []
+            
+            # 진행상황 표시
+            progress_bar.set_postfix(loss=loss.item() * accumulation_steps)  # 원래 손실값 표시
 
-            train_loss.append(loss.item())
-            progress_bar.set_postfix(loss=loss.item())
-
-        _val_loss, _val_score, class_f1_dict, wandb_cm = validation(model, criterion, val_loader, device, class_names)
+        # 검증 단계
+        _val_loss, _val_score, class_f1_dict, wandb_cm = hard_negative_validation(model, criterion, val_loader, device, class_names)
 
         log_data = {
             'epoch': epoch,
@@ -233,37 +394,40 @@ def train(model, optimizer, train_loader, val_loader, scheduler, device, class_n
             best_score = _val_score
             best_model = model
             checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-            'best_score': best_score
-        }
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+                'best_score': best_score
+            }
             torch.save(checkpoint, save_path)
             print(f"Best model saved (epoch {epoch}, F1={_val_score:.4f}) → {save_path}")
 
     return best_model
 
-def validation(model, criterion, val_loader, device, class_names):
+def hard_negative_validation(model, criterion, val_loader, device, class_names):
     model.eval()
     val_loss = []
     preds, true_labels = [], []
 
-    with torch.no_grad():
-        for imgs, labels in tqdm(iter(val_loader)):
-            imgs = imgs.float().to(device)
-            labels = labels.to(device)
+    for batch in tqdm(iter(val_loader)):
+        if len(batch) == 3:  # 인덱스 포함하는 경우
+            imgs, labels, _ = batch
+        else:
+            imgs, labels = batch
+        
+        imgs = imgs.float().to(device)
+        inputs = {'pixel_values':imgs}
+        labels = labels.to(device).long()
 
-            inputs = {'pixel_values':imgs}
+        outputs = model(**inputs)
+        pred = outputs.logits
+        sample_losses = criterion(pred, labels)  # 샘플별 손실값 계산
+        loss = sample_losses.mean()  # 평균 손실값 계산
 
-            outputs = model(**inputs)
-            logits = outputs.logits
-            loss = criterion(logits, labels)
-
-
-            preds += outputs.logits.argmax(-1).detach().cpu().numpy().tolist()
-            true_labels += labels.detach().cpu().numpy().tolist()
-            val_loss.append(loss.item())
+        preds += pred.argmax(1).detach().cpu().numpy().tolist()
+        true_labels += labels.detach().cpu().numpy().tolist()
+        val_loss.append(loss.item())
 
     _val_loss = np.mean(val_loss)
     _val_score = f1_score(true_labels, preds, average='macro')
@@ -289,9 +453,9 @@ def validation(model, criterion, val_loader, device, class_names):
     return _val_loss, _val_score, class_f1_dict, wandb_cm
 
 if __name__ == '__main__':
-    trained_path = "./experiments\dinov2-reg_1\dinov2-reg_1-best.pth" # 이어서 학습을 진행할 경우, 학습된 모델 경로 설정. 처음부터 학습을 진행시킬 것이라면, 공백으로 설정
+    trained_path = "" # 이어서 학습을 진행할 경우, 학습된 모델 경로 설정. 처음부터 학습을 진행시킬 것이라면, 공백으로 설정
     model_name = "dinov2-reg" # TIMM 모델명 설정
-    test_size = 0.3
+    test_size = 0.2
 
     if trained_path == "":
         idx = len([x for x in os.listdir('./experiments') if x.startswith(model_name)])
@@ -303,8 +467,8 @@ if __name__ == '__main__':
         project="rock-classification",
         config=CFG,
         name=experiment_name,
-        resume='must',
-        id="3mdietie"
+        # resume='must',
+        # id="3mdietie"
     )
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -322,6 +486,7 @@ if __name__ == '__main__':
     val_data['rock_type'] = le.transform(val_data['rock_type'])
 
     class_names = le.classes_
+    num_classes = len(class_names)
 
     label_counts = Counter(train_data['rock_type'])
 
@@ -332,7 +497,6 @@ if __name__ == '__main__':
 
     train_transform = A.Compose([
     RandomCenterCrop(min_size=75, max_size=200, p=0.5),
-    PadSquare(value=(0, 0, 0)),
     A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
     A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
     A.GaussNoise(std_range=(0.1,0.15), p=0.5),
@@ -344,17 +508,36 @@ if __name__ == '__main__':
 ])
     test_transform = A.Compose([
     RandomCenterCrop(min_size=75, max_size=200, p=0.4),
-    PadSquare(value=(0, 0, 0)),
     A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ToTensorV2()
     ])
 
     train_dataset = CustomDataset(train_data['img_path'].values, train_data['rock_type'].values, train_transform)
-    train_loader = DataLoader(train_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=True, num_workers=8, pin_memory=True, prefetch_factor=2)
+    hard_negative_miner = HardNegativeMiner(
+                    dataset_size=len(dataset['train_data']), 
+                    memory_size=CFG['HARD_NEGATIVE_MEMORY_SIZE']
+                )
+                
+    balanced_batch_sampler = BalancedHardNegativeBatchSampler(
+        dataset_size=len(train_dataset),
+        batch_size=CFG['BATCH_SIZE'],
+        hard_negative_miner=hard_negative_miner,
+        labels=train_data['rock_type'].values,
+        num_classes=num_classes,
+        hard_negative_ratio=CFG['HARD_NEGATIVE_RATIO']
+    )
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_sampler=balanced_batch_sampler,
+        num_workers=16, 
+        pin_memory=True,
+        prefetch_factor=4
+    )
 
     val_dataset = CustomDataset(val_data['img_path'].values, val_data['rock_type'].values, test_transform)
-    val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=8, pin_memory=True, prefetch_factor=2)
+    val_loader = DataLoader(val_dataset, batch_size=CFG['BATCH_SIZE'], shuffle=False, num_workers=16, pin_memory=True, prefetch_factor=4)
 
     model = AutoModelForImageClassification.from_pretrained('./weights/facebook/dinov2-with-registers-large-imagenet1k-1-layer')
 
@@ -370,7 +553,7 @@ if __name__ == '__main__':
     classifier_params = model.classifier.parameters()
 
     optimizer = torch.optim.Adam(params=model.parameters(), lr=CFG["LEARNING_RATE"])
-    scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS']-8, eta_min=1e-7)
+    scheduler = CosineAnnealingLR(optimizer, T_max=CFG['EPOCHS'], eta_min=5e-7)
 
     wandb.config.update({
         "optimizer": optimizer.__class__.__name__,
@@ -436,10 +619,8 @@ if __name__ == '__main__':
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_score = checkpoint['best_score']
-        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=best_score, cur_epoch=start_epoch, experiment_name=experiment_name, folder_path = folder_path, class_counts=class_counts)
+        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, best_score=best_score, cur_epoch=start_epoch, experiment_name=experiment_name, folder_path = folder_path, class_counts=class_counts, accumulation_steps=CFG['ACCUMULATION_STEPS'])
     else:
-        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, experiment_name=experiment_name, folder_path = folder_path, class_counts=class_counts)
+        infer_model = train(model, optimizer, train_loader, val_loader, scheduler, device, class_names, experiment_name=experiment_name, folder_path = folder_path, class_counts=class_counts, accumulation_steps=CFG['ACCUMULATION_STEPS'])
 
     wandb.finish()
-    # for model in timm.list_models(pretrained=True)[:1000]:
-    #     print(model)
