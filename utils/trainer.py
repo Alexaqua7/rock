@@ -480,7 +480,6 @@ class Trainer:
                 class_names=dataset['class_names'],
                 experiment_name=experiment_name,
                 folder_path=experiment_dir,
-                class_counts=dataset['class_counts'],
                 accumulation_steps=self.config.get('ACCUMULATION_STEPS', 1),
                 epochs=self.config['EPOCHS'],
                 criterion=self._get_criterion()
