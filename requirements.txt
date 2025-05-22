@@ -7,3 +7,4 @@ scikit-learn
 wandb
 seaborn
 matplotlib
+transformers
