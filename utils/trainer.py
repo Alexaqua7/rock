@@ -218,7 +218,7 @@ class Trainer:
                 )
                 
                 train_loader = create_train_loader_with_accumulation(train_dataset, hard_negative_miner, dataset['train_data']['rock_type'].values, dataset['num_classes'], 
-                                        self.config['BATCH_SIZE'], self.config['ACCUMULATION_STEPS'], hard_negative_ratio=0.2, num_workers=self.config['NUM_WORKERS'])
+                                        self.config['BATCH_SIZE'], self.config['ACCUMULATION_STEPS'], hard_negative_ratio=self.config['HARD_NEGATIVE_RATIO'], num_workers=self.config['NUM_WORKERS'])
                 
                 result = {
                     'train_loader': train_loader,
