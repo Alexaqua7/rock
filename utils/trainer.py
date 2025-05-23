@@ -2,7 +2,7 @@ import warnings
 from utils.dataset import CustomDataset
 from torch.utils.data import DataLoader
 from utils.loss import weighted_normalized_CrossEntropyLoss, weighted_normalized_CrossEntropyLoss_custom, weighted_normalized_CrossEntropyLoss_diff_weighted
-from utils.sampling import WeightedRandomSampler, create_weighted_sampler, HardNegativeMiner, BalancedHardNegativeBatchSampler
+from utils.sampling import WeightedRandomSampler, create_weighted_sampler, HardNegativeMiner, BalancedHardNegativeBatchSampler, create_train_loader_with_accumulation
 from utils.training_function import train, hard_negative_train, validation, hard_negative_validation
 from utils.utils import seed_everything
 import glob
@@ -217,21 +217,8 @@ class Trainer:
                     memory_size=self.config['HARD_NEGATIVE_MEMORY_SIZE']
                 )
                 
-                balanced_batch_sampler = BalancedHardNegativeBatchSampler(
-                    dataset_size=len(train_dataset),
-                    batch_size=self.config['BATCH_SIZE'],
-                    hard_negative_miner=hard_negative_miner,
-                    labels=dataset['train_data']['rock_type'].values,
-                    num_classes=dataset['num_classes'],
-                    hard_negative_ratio=self.config['HARD_NEGATIVE_RATIO']
-                )
-                
-                train_loader = DataLoader(
-                    train_dataset, 
-                    batch_sampler=balanced_batch_sampler,
-                    num_workers=self.config['NUM_WORKERS'], 
-                    pin_memory=True
-                )
+                train_loader = create_train_loader_with_accumulation(train_dataset, hard_negative_miner, dataset['train_data']['rock_type'].values, dataset['num_classes'], 
+                                        self.config['BATCH_SIZE'], self.config['ACCUMULATION_STEPS'], hard_negative_ratio=0.2, num_workers=self.config['NUM_WORKERS'])
                 
                 result = {
                     'train_loader': train_loader,
@@ -351,10 +338,10 @@ class Trainer:
                 'lr': self.config['LEARNING_RATE'],
                 'train_transform': [str(x) for x in self.config['TRAIN_TRANSFORM']],
                 'optimizer': {
-                    'name': self.config['OPTIMIZER'].__class__.__name__
+                    'name': self.optimizer.__class__.__name__
                 },
                 'scheduler': {
-                    'name': self.config['SCHEDULER'].__class__.__name__
+                    'name': self.scheduler.__class__.__name__
                 },
                 'hard_negative_ratio': self.config.get('HARD_NEGATIVE_RATIO', 0),
                 'hard_negative_memory_size': self.config.get('HARD_NEGATIVE_MEMORY_SIZE', 0),
