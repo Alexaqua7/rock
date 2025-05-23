@@ -628,7 +628,7 @@ if __name__ == '__main__':
             experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
         folder_path = os.path.join("../../experiments", experiment_name)
         wandb.init(
-            project="delete", #"rock-classification",
+            project="rock-classification",
             config=CFG,
             name=experiment_name,
             # resume='must',
