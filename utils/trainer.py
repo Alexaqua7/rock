@@ -335,6 +335,7 @@ class Trainer:
             },
             'train': {
                 'epoch': self.config['EPOCHS'],
+                'batch_size': self.config['BATCH_SIZE'],
                 'lr': self.config['LEARNING_RATE'],
                 'train_transform': [str(x) for x in self.config['TRAIN_TRANSFORM']],
                 'optimizer': {
@@ -362,6 +363,8 @@ class Trainer:
                 'processor': platform.processor(),
             }
         }
+        if self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE]:
+            config['train']['effective_batch_size'] = self.config['BATCH_SIZE'] * self.config['ACCUMULATION_STEPS']
         
         # Add optimizer parameters
         for k, v in self.optimizer.state_dict()['param_groups'][0].items():
