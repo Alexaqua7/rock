@@ -7,7 +7,7 @@ from utils.training_function import train, hard_negative_train, validation, hard
 from utils.utils import seed_everything
 import glob
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn import preprocessing
 import timm
 import wandb
@@ -67,7 +67,6 @@ class Trainer:
         # Create base paths
         self.data_path = self.config.get('DATA_PATH', './train')
         self.experiment_path = self.config.get('EXPERIMENT_PATH', './experiments')
-        self.dataset = self.init_dataset('train')
         
         # Ensure directory exists
         os.makedirs(self.experiment_path, exist_ok=True)
@@ -108,57 +107,101 @@ class Trainer:
             df['rock_type'] = df['img_path'].apply(
                 lambda x: str(x).replace('\\', '/').split('/')[-2]
             )
-            # Split data into train and validation sets
-            train_data, val_data, _, _ = train_test_split(
-                df, 
-                df['rock_type'], 
-                test_size=self.config['TEST_SIZE'], 
-                stratify=df['rock_type'], 
-                random_state=self.config['SEED']
-            )
-            
-            # Encode class labels
+
             le = preprocessing.LabelEncoder()
-            train_data['rock_type'] = le.fit_transform(train_data['rock_type'])
-            val_data['rock_type'] = le.transform(val_data['rock_type'])
+            df['rock_type'] = le.fit_transform(df['rock_type'])
+
+            # Split data into train and validation sets
+            if self.config['FOLD'] > 0:
+                kfold = StratifiedKFold(n_splits=self.config['FOLD'], shuffle=True, random_state=self.config['SEED'])
+                kfold_data = {}
+                for fold, (train_idx, val_idx) in enumerate(kfold.split(df['img_path'], df['rock_type'])):
+                    kfold_data[fold] = (train_idx, val_idx)
+
+            else:
+                train_data, val_data, _, _ = train_test_split(
+                    df, 
+                    df['rock_type'], 
+                    test_size=self.config['TEST_SIZE'], 
+                    stratify=df['rock_type'], 
+                    random_state=self.config['SEED']
+                )
             
             # Get class information
             class_names = le.classes_
             num_classes = len(class_names)
             
-            class_names = le.classes_
-
-            label_counts = Counter(train_data['rock_type'])
-
-        # le.classes_ 순서에 맞춰 클래스별 count 매핑
-            class_counts = {
-            class_name: label_counts[i] for i, class_name in enumerate(le.classes_)
-        }
+            kFold_class_infos = dict()
+            if self.config['FOLD'] > 0:
+                for fold in range(self.config['FOLD']):
+                    label_counts = Counter(df.iloc[kfold_data[fold][0]].copy().reset_index(drop=True)['rock_type'])
+                    class_counts = {
+                class_name: label_counts[i] for i, class_name in enumerate(le.classes_)
+            }
+                    kFold_class_infos[fold] = {"label_counts": label_counts, "class_counts": class_counts}
+            else:
+                label_counts = Counter(train_data['rock_type'])
+                # le.classes_ 순서에 맞춰 클래스별 count 매핑
+                class_counts = {
+                class_name: label_counts[i] for i, class_name in enumerate(le.classes_)
+            }
             
             # Initialize datasets with transformations
             train_transform = self.config['TRAIN_TRANSFORM']
             test_transform = self.config['TEST_TRANSFORM']
             
-            train_dataset = CustomDataset(
-                train_data['img_path'].values, 
-                train_data['rock_type'].values, 
-                train_transform
-            )
-            val_dataset = CustomDataset(
-                val_data['img_path'].values, 
-                val_data['rock_type'].values, 
-                test_transform
-            )
+
+            if self.config['FOLD'] > 0:
+                kFold_dataset = dict()
+                for fold in range(self.config['FOLD']):
+                    train_idx, val_idx = kfold_data[fold]
+                    train_data = df.iloc[train_idx].copy().reset_index(drop=True)
+                    val_data = df.iloc[val_idx].copy().reset_index(drop=True)
+
+                    train_dataset = CustomDataset(
+                    train_data['img_path'].values, 
+                    train_data['rock_type'].values, 
+                    train_transform
+                )
+                    val_dataset = CustomDataset(
+                    val_data['img_path'].values, 
+                    val_data['rock_type'].values, 
+                    test_transform
+                )
+                    kFold_dataset[fold] = {
+                    'train_dataset': train_dataset,
+                    'val_dataset': val_dataset,
+                    'class_names': class_names,
+                    'num_classes': num_classes,
+                    'train_data': train_data,
+                    'val_data': val_data,
+                    'class_counts': kFold_class_infos[fold]['class_counts'],
+                    'le': le
+                }
+
+                return kFold_dataset
             
-            return {
-                "train_dataset": train_dataset, 
-                "val_dataset": val_dataset, 
-                "class_names": class_names, 
-                'num_classes': num_classes, 
-                'train_data': train_data, 
-                'val_data': val_data,
-                'class_counts': class_counts,
-                'le': le
+            else:
+                train_dataset = CustomDataset(
+                    train_data['img_path'].values, 
+                    train_data['rock_type'].values, 
+                    train_transform
+                )
+                val_dataset = CustomDataset(
+                    val_data['img_path'].values, 
+                    val_data['rock_type'].values, 
+                    test_transform
+                )
+                
+                return {
+                    "train_dataset": train_dataset, 
+                    "val_dataset": val_dataset, 
+                    "class_names": class_names, 
+                    'num_classes': num_classes, 
+                    'train_data': train_data, 
+                    'val_data': val_data,
+                    'class_counts': class_counts,
+                    'le': le
             }
         elif mode == 'test':
             # Load test data
@@ -306,7 +349,7 @@ class Trainer:
             # 3. Sequential 스케줄러
             return SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmups])
         
-    def set_experiment(self) -> Dict[str, str]:
+    def set_experiment(self, cur_fold=None, idx=None) -> Dict[str, str]:
         """
         Configure experiment settings and save configuration.
         
@@ -318,8 +361,9 @@ class Trainer:
         
         # Create experiment name and directory
         if not trained_path:
-            idx = len([x for x in os.listdir(self.experiment_path) if x.startswith(model_name)])
-            experiment_name = f"{model_name}_{idx + 1}"
+            if idx is None:
+                idx = len([x for x in os.listdir(self.experiment_path) if x.startswith(model_name)])
+            experiment_name = f"{model_name}_{idx + 1}" if self.config['FOLD'] == 0 else f"{model_name}_{idx + 1}_fold{cur_fold}"
         else:
             experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
         
@@ -329,6 +373,7 @@ class Trainer:
         # Create configuration dictionary
         config = {
             'experiment': {'name': experiment_name},
+            'kFold': f"{cur_fold}/{self.config['FOLD']}",
             'model': {
                 'name': self.config['MODEL_NAME'],
                 'IMG_size': self.config['IMG_SIZE']
@@ -381,7 +426,7 @@ class Trainer:
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=4)
         
-        return {'experiment_dir': experiment_dir, 'experiment_name': experiment_name}
+        return {'experiment_dir': experiment_dir, 'experiment_name': experiment_name, 'idx': idx}
     
     def _setup_logging(self, experiment_name: str) -> None:
         """
@@ -412,6 +457,18 @@ class Trainer:
         )
     
     def train(self) -> torch.nn.Module:
+        """
+        Run the training process.
+        
+        Returns:
+            Trained model
+        """
+        if self.config['FOLD'] > 0:
+            self.fold_train()
+        else:
+            self.single_train()
+    
+    def single_train(self) -> torch.nn.Module:
         """
         Run the training process.
         
@@ -503,6 +560,103 @@ class Trainer:
         
         return trained_model
     
+    def fold_train(self) -> List[torch.nn.Module]:
+        """
+        Run k-fold cross validation training process.
+        
+        Returns:
+            List of trained models for each fold
+        """
+        # Initialize k-fold
+        kFold_dataset = self.init_dataset('train') # dict 형태
+        folder_idx = None
+        
+        print(f"Starting {self.config['FOLD']}-Fold Cross Validation Training...")
+        
+        for fold in range(self.config['FOLD']):
+            dataset = kFold_dataset[fold]
+            loaders = self.init_loader('train', dataset)
+            train_loader, val_loader = loaders['train_loader'], loaders['val_loader']
+            
+            # Initialize model
+            model = self.init_model(dataset['num_classes'])
+            model = model.to(self.device)
+            
+            # Get training components
+            optimizer = self.set_optimizer(model)
+            scheduler = self.set_scheduler(optimizer)
+
+            self.optimizer = optimizer # 로깅을 위함
+            self.scheduler = scheduler # 로깅을 위함
+
+            # Set up experiment
+            exp_settings = self.set_experiment(fold, idx=folder_idx)
+            experiment_name = exp_settings['experiment_name']
+            experiment_dir = exp_settings['experiment_dir']
+            folder_idx = exp_settings['idx']
+
+            # Set up logging
+            self._setup_logging(experiment_name)
+            
+            start_epoch = 1
+            best_score = 0.0
+            if self.config.get('TRAINED_PATH', "") != "":
+                checkpoint = torch.load(self.config.get('TRAINED_PATH'), map_location=self.device)
+                model.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                start_epoch = checkpoint['epoch'] + 1
+                best_score = checkpoint['best_score']
+
+            # Choose appropriate training function based on mode
+            if self.config['TRAIN_MODE'] in [TRAIN_MODE_BASE, TRAIN_MODE_OVERSAMPLE]:
+                # Standard training with optional oversampling
+                print(f"Starting Standard Training ({self.config['TRAIN_MODE']})...")
+                trained_model = train(
+                    model=model,
+                    optimizer=optimizer,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    scheduler=scheduler,
+                    device=self.device,
+                    cur_epoch=start_epoch,
+                    best_score=best_score,
+                    class_names=dataset['class_names'],
+                    experiment_name=experiment_name,
+                    folder_path=experiment_dir,
+                    accumulation_steps=self.config.get('ACCUMULATION_STEPS', 1),
+                    epochs=self.config['EPOCHS'],
+                    criterion=self._get_criterion()
+                )
+            elif self.config['TRAIN_MODE'] == TRAIN_MODE_HARD_NEGATIVE:
+                # Hard negative sampling training
+                print("Starting Training with Hard Negative Samples...")
+                hard_negative_miner = loaders.get('hard_negative_miner')
+                trained_model = hard_negative_train(
+                    model=model,
+                    optimizer=optimizer,
+                    train_loader=train_loader,
+                    val_loader=val_loader,
+                    scheduler=scheduler,
+                    device=self.device,
+                    cur_epoch=start_epoch,
+                    best_score=best_score,
+                    class_names=dataset['class_names'],
+                    hard_negative_miner=hard_negative_miner,
+                    experiment_name=experiment_name,
+                    folder_path=experiment_dir,
+                    accumulation_steps=self.config.get('ACCUMULATION_STEPS', 1),
+                    epochs=self.config['EPOCHS'],
+                    criterion=self._get_criterion()
+                )
+            else:
+                raise ValueError(f"Invalid training mode: {self.config['TRAIN_MODE']}")
+            
+            # Close wandb logging
+            wandb.finish()
+            
+        return trained_model
+
     def _get_criterion(self) -> torch.nn.Module:
         """
         Get the loss function based on configuration.

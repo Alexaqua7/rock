@@ -18,8 +18,8 @@ CFG = {
         A.Resize(img_size, img_size),
         A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
         A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
-        A.GaussNoise(std_range=(0.1,0.15), p=0.5),
         A.CLAHE(p=0.5),
+        A.GaussNoise(std_range=(0.1,0.15), p=0.5),
         A.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5)),
         ToTensorV2()
     ]),
@@ -35,6 +35,7 @@ CFG = {
     'BATCH_SIZE': 64, # Batch Size 정의
     'NUM_WORKERS': 16, # Num Workers 정의
     'LEARNING_RATE': 3e-4, # LR 정의 (Warmup 사용 시, Peak(가장 높은 LR)에 도달하였을 때 LR을 의미함)
+    'FOLD': 5,
 
     # 선택적인 인자 (기본값 사용 또는 명시적 설정)
     'DATA_PATH': './train',
@@ -44,14 +45,14 @@ CFG = {
     # HARD_NEGATIVE_MEMORY_SIZE, HARD_NEGATIVE_RATIO, BALANCED_BATCH가 (0,0,False)면 DEFAULT (BASE) TRAIN 수행
     'HARD_NEGATIVE_MEMORY_SIZE': 1000, #HARD NEGATIVE SAMPLING 사용 시 필수 설정! 얼만큼의 Hard Negative Samples 수를 저장하고 있을 지 설정
     'HARD_NEGATIVE_RATIO': 0.2, #HARD NEGATIVE SAMPLING 사용 시 필수 설정! 전체 Batch Size 중 얼마의 비율을 Hard Negative Samples로 가져갈 것인지 설정
-    'BALANCED_BATCH': False, #OVERSAMPLING 사용 시 True로 설정! 각 클래스에서 동일한 개수의 데이터를 샘플링하여 배치 구성을 할 수 있는 설정 
+    'BALANCED_BATCH': True, #OVERSAMPLING 사용 시 True로 설정! 각 클래스에서 동일한 개수의 데이터를 샘플링하여 배치 구성을 할 수 있는 설정 
     'OPTIMIZER': 'adam', #Optimizer 설정 (adam, adamw 중 택 1); Default: adam
     'WARM_UP': 0, #WarmUp 사용 시, Warmup할 Epoch 수 설정. WarmUp은 LinearLR로 수행됨. 0이라면 Warmup을 사용하지 않음; Default: 0
-    'ETA_MIN': 1e-5, #CosineAnnealingLR 사용 시, Min_LR을 설정; Default: 1e-8
+    'ETA_MIN': 1e-8, #CosineAnnealingLR 사용 시, Min_LR을 설정; Default: 1e-8
     'SCHEDULER': 'cosineannealing', #현재 cosineannealing만 사용할 수 있도록 설정됨
     'START_FACTOR': 1/3, #(Warmup 사용 시에만 작동함), InitialLR을 얼마로 설정할 것인지 결정. InitialLR = LEARNING_RATE * START_FACTOR, MaximumLR (BaseLR) = LEARNING_RATE; Default: 1/3
-    'ACCUMULATION_STEPS': 1, #Gradient Accumulation 사용 시, 몇 Step마다 Update할 것인지 결정. Effective Batch Size = BATCH_SIZE * ACCUMULATION_STEPS; Default: 1
-    'WANDB_PROJECT': 'delete',#'rock-classification',
+    'ACCUMULATION_STEPS': 8, #Gradient Accumulation 사용 시, 몇 Step마다 Update할 것인지 결정. Effective Batch Size = BATCH_SIZE * ACCUMULATION_STEPS; Default: 1
+    'WANDB_PROJECT': 'rock-classification',
     'LOSS_TYPE': 'CE', #Loss Function 설정 (weighted_normalized, CE, weighted_normalized_custom, weighted_normalized_diff_weighted 중 택 1); Default: CE (CrossEntropyLoss)
     'FACTOR': 1, #(LOSS_TYPE으로 weighted_normalized 사용 시에만 작동함) Class_weights를 어느 범위로 가져갈 것인지 결정 [1, 1 + FACTOR]; Default: 1 --> Default 범위는 [1, 2]
     'LABEL_SMOOTHING': 0, #Label_Smoothing 사용 시, 설정. 0이면 Label Smoothing을 사용하지 않음 (수치가 커질 수록 더 많은 Label Smoothing을 적용); Default: 0
