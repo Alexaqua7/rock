@@ -21,6 +21,7 @@ from typing import Dict, Any, Optional, Tuple, List
 from collections import Counter
 from tqdm import tqdm
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+import inspect
 
 # Model source mapping
 MODEL_SOURCE_MAPPER = {
@@ -385,6 +386,7 @@ class Trainer:
         os.makedirs(experiment_dir, exist_ok=True)
         
         # Create configuration dictionary
+        loss = self._get_criterion()
         config = {
             'experiment': {'name': experiment_name},
             'kFold': f"{cur_fold}/{self.config['FOLD']}",
@@ -405,8 +407,14 @@ class Trainer:
                 },
                 'hard_negative_ratio': self.config.get('HARD_NEGATIVE_RATIO', 0),
                 'hard_negative_memory_size': self.config.get('HARD_NEGATIVE_MEMORY_SIZE', 0),
+                'progressive_hard_negative_initial_ratio': self.config.get('INITIAL_RATIO', 0.0),
+                'progressive_hard_negative_final_ratio': self.config.get('FINAL_RATIO', 0),
+                'progressive_hard_negative_schedule': self.config.get('SCHEDULE_TYPE', 'None'),
                 'balanced_class_sampling': self.config['TRAIN_MODE'] in [TRAIN_MODE_OVERSAMPLE, TRAIN_MODE_HARD_NEGATIVE, TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE],
-                'accumulation_steps': self.config.get('ACCUMULATION_STEPS', 1)
+                'accumulation_steps': self.config.get('ACCUMULATION_STEPS', 1),
+                'loss': {
+                    'name': loss.__name__
+                },
             },
             'validation': {
                 'test_transform': [str(x) for x in self.config['TEST_TRANSFORM']]
@@ -424,7 +432,13 @@ class Trainer:
         }
         if self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE]:
             config['train']['effective_batch_size'] = self.config['BATCH_SIZE'] * self.config['ACCUMULATION_STEPS']
-        
+        params = inspect.signature(loss.__class__.__init__).parameters
+        for param in params:
+            if param == 'self':
+                continue
+            if hasattr(loss, param):
+                config['train']['loss'][param] = getattr(loss, param)
+
         # Add optimizer parameters
         for k, v in self.optimizer.state_dict()['param_groups'][0].items():
             if k == 'params':
@@ -605,7 +619,7 @@ class Trainer:
         print(f"Starting {self.config['FOLD']}-Fold Cross Validation Training...")
 
         start_fold = 0 if self.config['START_FOLD'] in [None, 0] else self.config['START_FOLD']
-        end_fold = self.config['FOLD'] if self.config['END_FOLD'] in [None, self.config['FOLD']] else self.config['END_FOLD']
+        end_fold = self.config['FOLD'] if self.config['END_FOLD'] in [None, self.config['FOLD']] else self.config['END_FOLD'] + 1
 
         for fold in range(start_fold, end_fold):
             dataset = kFold_dataset[fold]
