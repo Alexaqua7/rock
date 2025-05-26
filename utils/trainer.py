@@ -413,7 +413,7 @@ class Trainer:
                 'balanced_class_sampling': self.config['TRAIN_MODE'] in [TRAIN_MODE_OVERSAMPLE, TRAIN_MODE_HARD_NEGATIVE, TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE],
                 'accumulation_steps': self.config.get('ACCUMULATION_STEPS', 1),
                 'loss': {
-                    'name': loss.__name__
+                    'name': loss.__class__.__name__
                 },
             },
             'validation': {
@@ -432,12 +432,12 @@ class Trainer:
         }
         if self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE]:
             config['train']['effective_batch_size'] = self.config['BATCH_SIZE'] * self.config['ACCUMULATION_STEPS']
-        params = inspect.signature(loss.__class__.__init__).parameters
-        for param in params:
-            if param == 'self':
-                continue
-            if hasattr(loss, param):
-                config['train']['loss'][param] = getattr(loss, param)
+        # 1. CrossEntropyLoss 생성자의 인자 이름 목록 가져오기
+        constructor_args = inspect.signature(loss).parameters.keys()
+
+        # 2. loss 객체의 현재 속성 딕트 중, 생성자에서 설정 가능한 항목만 추출
+        config['train']['loss'] = {k: getattr(loss, k) for k in constructor_args if hasattr(loss, k)}
+
 
         # Add optimizer parameters
         for k, v in self.optimizer.state_dict()['param_groups'][0].items():
@@ -586,7 +586,7 @@ class Trainer:
                 progressive_scheduler = ProgressiveScheduler(
                                         initial_ratio=self.config['INITIAL_RATIO'],
                                         final_ratio=self.config['FINAL_RATIO'],
-                                        total_epochs=self.config['EPOCHS'],
+                                        total_epochs=self.config.get('HARD_NEGATIVE_CURRICULUM_LEARNING_EPOCH', 0) if self.config.get('HARD_NEGATIVE_CURRICULUM_LEARNING_EPOCH', 0) > 0 else self.config['EPOCHS'],
                                         schedule_type=self.config['SCHEDULE_TYPE']
                                     )
                 hard_negative_miner = loaders.get('hard_negative_miner')
@@ -614,7 +614,7 @@ class Trainer:
         """
         # Initialize k-fold
         kFold_dataset = self.init_dataset('train') # dict 형태
-        folder_idx = None
+        folder_idx = 27
         
         print(f"Starting {self.config['FOLD']}-Fold Cross Validation Training...")
 
