@@ -460,7 +460,7 @@ class Trainer:
         # Initialize wandb logging
         wandb.init(
             project=self.config.get('WANDB_PROJECT', 'rock-classification'),
-            name=experiment_name,
+            name=f"{experiment_name}_{socket.gethostname()}",
             entity = "alexseo-inha-university",
             # resume='must',
             # id='brs1qe2i',
