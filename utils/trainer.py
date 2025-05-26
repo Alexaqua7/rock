@@ -113,14 +113,6 @@ class Trainer:
             le = preprocessing.LabelEncoder()
             df['rock_type'] = le.fit_transform(df['rock_type'])
 
-            df, _, _, _ = train_test_split(
-                    df, 
-                    df['rock_type'], 
-                    test_size=0.99, 
-                    stratify=df['rock_type'], 
-                    random_state=self.config['SEED']
-                )
-
             # Split data into train and validation sets
             if self.config['FOLD'] > 0:
                 kfold = StratifiedKFold(n_splits=self.config['FOLD'], shuffle=True, random_state=self.config['SEED'])
