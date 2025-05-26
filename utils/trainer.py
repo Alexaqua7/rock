@@ -2,8 +2,8 @@ import warnings
 from utils.dataset import CustomDataset
 from torch.utils.data import DataLoader
 from utils.loss import weighted_normalized_CrossEntropyLoss, weighted_normalized_CrossEntropyLoss_custom, weighted_normalized_CrossEntropyLoss_diff_weighted
-from utils.sampling import WeightedRandomSampler, create_weighted_sampler, HardNegativeMiner, BalancedHardNegativeBatchSampler, create_train_loader_with_accumulation
-from utils.training_function import train, hard_negative_train, validation, hard_negative_validation
+from utils.sampling import create_weighted_sampler, HardNegativeMiner, create_train_loader_with_accumulation, ProgressiveScheduler
+from utils.training_function import train, hard_negative_train, progressive_hard_negative_train
 from utils.utils import seed_everything
 import glob
 import pandas as pd
@@ -18,8 +18,6 @@ import socket
 import getpass
 import os
 from typing import Dict, Any, Optional, Tuple, List
-from torch.optim.optimizer import Optimizer
-from torch.optim.lr_scheduler import _LRScheduler
 from collections import Counter
 from tqdm import tqdm
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
@@ -34,6 +32,7 @@ MODEL_SOURCE_MAPPER = {
 TRAIN_MODE_BASE = 'BASE'
 TRAIN_MODE_OVERSAMPLE = 'OVERSAMPLE'
 TRAIN_MODE_HARD_NEGATIVE = 'HARD_NEGATIVE_SAMPLE'
+TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE = 'PROGRESSIVE_HARD_NEGATIVE_SAMPLE'
 
 
 class Trainer:
@@ -73,7 +72,10 @@ class Trainer:
     
     def _set_training_mode(self) -> None:
         """Determine the training mode based on configuration settings."""
-        if (self.config.get('HARD_NEGATIVE_MEMORY_SIZE', 0) > 0 and 
+
+        if (self.config.get('INITIAL_RATIO'), None) and (self.config.get('FINAL_RATIO', None)) and self.config.get('HARD_NEGATIVE_MEMORY_SIZE', 0) > 0:
+            self.config['TRAIN_MODE'] = TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE
+        elif (self.config.get('HARD_NEGATIVE_MEMORY_SIZE', 0) > 0 and 
             self.config.get('HARD_NEGATIVE_RATIO', 0) > 0):
             self.config['TRAIN_MODE'] = TRAIN_MODE_HARD_NEGATIVE
         elif self.config.get('BALANCED_BATCH', False):
@@ -110,6 +112,14 @@ class Trainer:
 
             le = preprocessing.LabelEncoder()
             df['rock_type'] = le.fit_transform(df['rock_type'])
+
+            df, _, _, _ = train_test_split(
+                    df, 
+                    df['rock_type'], 
+                    test_size=0.99, 
+                    stratify=df['rock_type'], 
+                    random_state=self.config['SEED']
+                )
 
             # Split data into train and validation sets
             if self.config['FOLD'] > 0:
@@ -270,6 +280,18 @@ class Trainer:
                 }
                 return result
             
+            elif self.config['TRAIN_MODE'] in [TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE]:
+                hard_negative_miner = HardNegativeMiner(
+                    dataset_size=len(dataset['train_data']), 
+                    memory_size=self.config['HARD_NEGATIVE_MEMORY_SIZE']
+                )
+                train_loader = None # train_loader가 Training_Function 내에서 정의 됨
+                result = {
+                    'train_loader': train_loader,
+                    'val_loader': DataLoader(val_dataset, shuffle=False, **loader_config),
+                    'hard_negative_miner': hard_negative_miner
+                }
+                return result
             else:
                 raise ValueError(f"Invalid training mode: {self.config['TRAIN_MODE']}")
             
@@ -391,7 +413,7 @@ class Trainer:
                 },
                 'hard_negative_ratio': self.config.get('HARD_NEGATIVE_RATIO', 0),
                 'hard_negative_memory_size': self.config.get('HARD_NEGATIVE_MEMORY_SIZE', 0),
-                'balanced_class_sampling': self.config['TRAIN_MODE'] in [TRAIN_MODE_OVERSAMPLE, TRAIN_MODE_HARD_NEGATIVE],
+                'balanced_class_sampling': self.config['TRAIN_MODE'] in [TRAIN_MODE_OVERSAMPLE, TRAIN_MODE_HARD_NEGATIVE, TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE],
                 'accumulation_steps': self.config.get('ACCUMULATION_STEPS', 1)
             },
             'validation': {
@@ -440,6 +462,8 @@ class Trainer:
             project=self.config.get('WANDB_PROJECT', 'rock-classification'),
             name=experiment_name,
             entity = "alexseo-inha-university",
+            # resume='must',
+            # id='brs1qe2i',
             config={
                 "model": self.config['MODEL_NAME'],
                 "optimizer": self.config['OPTIMIZER'].__class__.__name__,
@@ -552,6 +576,21 @@ class Trainer:
                 epochs=self.config['EPOCHS'],
                 criterion=self._get_criterion()
             )
+        elif self.config['TRAIN_MODE'] == TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE:
+                progressive_scheduler = ProgressiveScheduler(
+                                        initial_ratio=self.config['INITIAL_RATIO'],
+                                        final_ratio=self.config['FINAL_RATIO'],
+                                        total_epochs=self.config['EPOCHS'],
+                                        schedule_type=self.config['SCHEDULE_TYPE']
+                                    )
+                hard_negative_miner = loaders.get('hard_negative_miner')
+                trained_model= progressive_hard_negative_train(model, optimizer, dataset['train_dataset'], val_loader, scheduler, self.device, 
+                                  dataset['class_names'], dataset['train_data']['rock_type'].values, dataset['num_classes'], self.config['BATCH_SIZE'], self.config.get('ACCUMULATION_STEPS', 1),
+                                  progressive_scheduler, hard_negative_miner=hard_negative_miner, 
+                                  criterion=self._get_criterion(), 
+                                  best_score=0, epochs=self.config['EPOCHS'], cur_epoch=start_epoch, 
+                                  experiment_name=experiment_name, folder_path=experiment_dir,
+                                  num_workers=self.config['NUM_WORKERS'], prefetch_factor=4, pin_memory=True)
         else:
             raise ValueError(f"Invalid training mode: {self.config['TRAIN_MODE']}")
         
@@ -572,8 +611,11 @@ class Trainer:
         folder_idx = None
         
         print(f"Starting {self.config['FOLD']}-Fold Cross Validation Training...")
-        
-        for fold in range(self.config['FOLD']):
+
+        start_fold = 0 if self.config['START_FOLD'] in [None, 0] else self.config['START_FOLD']
+        end_fold = self.config['FOLD'] if self.config['END_FOLD'] in [None, self.config['FOLD']] else self.config['END_FOLD']
+
+        for fold in range(start_fold, end_fold):
             dataset = kFold_dataset[fold]
             loaders = self.init_loader('train', dataset)
             train_loader, val_loader = loaders['train_loader'], loaders['val_loader']
@@ -604,7 +646,7 @@ class Trainer:
                 checkpoint = torch.load(self.config.get('TRAINED_PATH'), map_location=self.device)
                 model.load_state_dict(checkpoint['model_state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-                scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                # scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 start_epoch = checkpoint['epoch'] + 1
                 best_score = checkpoint['best_score']
 
@@ -649,6 +691,22 @@ class Trainer:
                     epochs=self.config['EPOCHS'],
                     criterion=self._get_criterion()
                 )
+
+            elif self.config['TRAIN_MODE'] == TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE:
+                progressive_scheduler = ProgressiveScheduler(
+                                        initial_ratio=self.config['INITIAL_RATIO'],
+                                        final_ratio=self.config['FINAL_RATIO'],
+                                        total_epochs=self.config['EPOCHS'],
+                                        schedule_type=self.config['SCHEDULE_TYPE']
+                                    )
+                hard_negative_miner = loaders.get('hard_negative_miner')
+                trained_model= progressive_hard_negative_train(model, optimizer, dataset['train_dataset'], val_loader, scheduler, self.device, 
+                                  dataset['class_names'], dataset['train_data']['rock_type'].values, dataset['num_classes'], self.config['BATCH_SIZE'], self.config.get('ACCUMULATION_STEPS', 1),
+                                  progressive_scheduler, hard_negative_miner=hard_negative_miner, 
+                                  criterion=self._get_criterion(), 
+                                  best_score=0, epochs=self.config['EPOCHS'], cur_epoch=start_epoch, 
+                                  experiment_name=experiment_name, folder_path=experiment_dir,
+                                  num_workers=self.config['NUM_WORKERS'], prefetch_factor=4, pin_memory=True)
             else:
                 raise ValueError(f"Invalid training mode: {self.config['TRAIN_MODE']}")
             
