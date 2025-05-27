@@ -435,11 +435,9 @@ class Trainer:
         }
         if self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE]:
             config['train']['effective_batch_size'] = self.config['BATCH_SIZE'] * self.config['ACCUMULATION_STEPS']
-        # 1. CrossEntropyLoss 생성자의 인자 이름 목록 가져오기
-        constructor_args = inspect.signature(loss).parameters.keys()
 
-        # 2. loss 객체의 현재 속성 딕트 중, 생성자에서 설정 가능한 항목만 추출
-        config['train']['loss'] = {k: getattr(loss, k) for k in constructor_args if hasattr(loss, k)}
+        # loss 객체의 현재 속성 딕트 중, 생성자에서 설정 가능한 항목만 추출
+        config['train']['loss']['params'] = {{k: getattr(loss, k)} for k in loss.__dict__}
 
 
         # Add optimizer parameters
