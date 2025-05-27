@@ -27,7 +27,7 @@ from torch import nn
 CFG = {
     'IMG_SIZE': 384,
     'EPOCHS': 20,
-    'LEARNING_RATE': 2e-5,
+    'LEARNING_RATE': 8e-5,
     'BATCH_SIZE': 8,
     'SEED': 41,
     'AMP_TYPE': 'bfloat16',  # 예시로 추가
@@ -648,7 +648,7 @@ if __name__ == '__main__':
 
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=CFG['SEED'])
     for fold, (train_idx, val_idx) in enumerate(skf.split(df['img_path'], df['rock_type'])):
-        if fold in [0,1,4]:
+        if fold in [0,1,2,3]:
             continue
 
         trained_path = ""
