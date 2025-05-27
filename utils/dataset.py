@@ -5,11 +5,12 @@ import torch
 import os
 
 class CustomDataset(Dataset):
-    def __init__(self, img_path_list, label_list, transforms=None, save_images=False):
+    def __init__(self, img_path_list, label_list, transforms=None, save_images=False, return_index=False):
         self.img_path_list = img_path_list
         self.label_list = label_list
         self.transforms = transforms
         self.save_images = save_images
+        self.return_index = return_index  # 인덱스 반환 여부를 결정하는 플래그
 
     def __getitem__(self, index):
         img_path = self.img_path_list[index]
@@ -23,9 +24,15 @@ class CustomDataset(Dataset):
 
         if self.label_list is not None:
             label = self.label_list[index]
-            return image, label
+            if self.return_index:
+                return image, label, index  # 인덱스도 함께 반환
+            else:
+                return image, label
         else:
-            return image
+            if self.return_index:
+                return image, index  # 인덱스도 함께 반환
+            else:
+                return image
         
     def __len__(self):
         return len(self.img_path_list)

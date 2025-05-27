@@ -23,18 +23,19 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 from sklearn.model_selection import StratifiedKFold
+import cv2
 
 CFG = {
     'IMG_SIZE': 384,
     'EPOCHS': 20,
     'LEARNING_RATE': 2e-5,
-    'BATCH_SIZE': 8,
+    'BATCH_SIZE': 4,
     'SEED': 41,
     'AMP_TYPE': 'bfloat16',  # 예시로 추가
     'AMP_OPT_LEVEL': 'O1',  # 예시로 추가
     'kFold': 5,
     'TRAIN': {
-        'ACCUMULATION_STEPS': 8, # 예시로 추가
+        'ACCUMULATION_STEPS': 16, # 예시로 추가
         'CLIP_GRAD': None # 예시로 추가
     }
 }
@@ -312,7 +313,6 @@ def train(CFG, model, criterion, train_loader, val_loader, optimizer, lr_schedul
 
 
 if __name__ == '__main__':
-    import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     trained_path = ''
     model_name = "../../weights/OpenGVLab/internimage_xl_22kto1k_384"
@@ -328,6 +328,9 @@ if __name__ == '__main__':
 
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=CFG['SEED'])
     for fold, (train_idx, val_idx) in enumerate(skf.split(df['img_path'], df['rock_type'])):
+        if fold in [0,1,5]:
+            continue
+
         trained_path = ""
 
         if trained_path == "":
@@ -360,18 +363,16 @@ if __name__ == '__main__':
 
         train_transform = A.Compose([
         RandomCenterCrop(min_size=75, max_size=200, p=0.5),
-        PadSquare(value=(0, 0, 0)),
         A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
         A.HorizontalFlip(p=0.5),  # 50% 확률로 좌우 반전
         A.VerticalFlip(p=0.5),    # 50% 확률로 상하 반전
-        A.GaussNoise(std_range=(0.1,0.15), p=0.5),
         A.CLAHE(p=0.5),
+        A.GaussNoise(std_range=(0.1,0.15), p=0.5),
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2()
     ])
         test_transform = A.Compose([
             RandomCenterCrop(min_size=75, max_size=200, p=0.4),
-            PadSquare(value=(0, 0, 0)),
             A.Resize(CFG['IMG_SIZE'], CFG['IMG_SIZE']),
             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ToTensorV2()

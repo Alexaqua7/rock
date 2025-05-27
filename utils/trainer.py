@@ -164,12 +164,14 @@ class Trainer:
                     train_dataset = CustomDataset(
                     train_data['img_path'].values, 
                     train_data['rock_type'].values, 
-                    train_transform
+                    train_transform,
+                    return_index=self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE ,TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE]
                 )
                     val_dataset = CustomDataset(
                     val_data['img_path'].values, 
                     val_data['rock_type'].values, 
-                    test_transform
+                    test_transform,
+                    return_index=self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE ,TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE]
                 )
                     kFold_dataset[fold] = {
                     'train_dataset': train_dataset,
@@ -188,7 +190,8 @@ class Trainer:
                 train_dataset = CustomDataset(
                     train_data['img_path'].values, 
                     train_data['rock_type'].values, 
-                    train_transform
+                    train_transform,
+                    return_index=self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE ,TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE]
                 )
                 val_dataset = CustomDataset(
                     val_data['img_path'].values, 
@@ -583,6 +586,7 @@ class Trainer:
                 criterion=self._get_criterion()
             )
         elif self.config['TRAIN_MODE'] == TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE:
+                print("Starting Training with Progressive Hard Negative Samples...")
                 progressive_scheduler = ProgressiveScheduler(
                                         initial_ratio=self.config['INITIAL_RATIO'],
                                         final_ratio=self.config['FINAL_RATIO'],
@@ -699,10 +703,11 @@ class Trainer:
                 )
 
             elif self.config['TRAIN_MODE'] == TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE:
+                print("Starting Training with Progressive Hard Negative Samples...")
                 progressive_scheduler = ProgressiveScheduler(
                                         initial_ratio=self.config['INITIAL_RATIO'],
                                         final_ratio=self.config['FINAL_RATIO'],
-                                        total_epochs=self.config['EPOCHS'],
+                                        total_epochs=self.config.get('HARD_NEGATIVE_CURRICULUM_LEARNING_EPOCH', 0) if self.config.get('HARD_NEGATIVE_CURRICULUM_LEARNING_EPOCH', 0) > 0 else self.config['EPOCHS'],
                                         schedule_type=self.config['SCHEDULE_TYPE']
                                     )
                 hard_negative_miner = loaders.get('hard_negative_miner')
