@@ -765,11 +765,12 @@ class Trainer:
         if saved_name == None:
             raise SyntaxError('Trained Model Path is Missing')
         checkpoint = torch.load(saved_name, map_location=self.device)
-        model = self.init_model(self.dataset['num_classes'])
-        model.load_state_dict(checkpoint['model_state_dict'])
 
         dataset = self.init_dataset('train')
-        le = dataset['le']
+        model = self.init_model(dataset.get('num_classes', dataset[0]['num_classes']))
+        model.load_state_dict(checkpoint['model_state_dict'])
+
+        le = dataset.get('le', dataset[0]['le'])
         test_dataset = self.init_dataset('test')
         test_loader = self.init_loader('test', test_dataset)['test_loader']
         model.to(self.device).eval()
