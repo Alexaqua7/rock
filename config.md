@@ -52,7 +52,7 @@
 ## 5. 실행 방법
 
 - 학습 실행: `python run.py` (`trainer.train()` 활성화)  
-- 추론 실행: `python run.py` (`trainer.predict()` 활성화 및 `TRAINED_PATH` 설정 필요)
+- 추론 실행: `python run.py` (`trainer.predict()` 활성화 및 `TRAINED_PATH` 설정 필요, TEST_TRANSFORM에 RandomCenterCrop 반드시 주석 처리 후 실행)
 
 ---
 
