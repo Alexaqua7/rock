@@ -24,7 +24,7 @@ CFG = {
         ToTensorV2()
     ]),
     'TEST_TRANSFORM': A.Compose([ #(trainer.train()사용 시, Validation // trainer.predict사용 시, Test) 시, 사용할 Transform 정의 #########Inference 시 필수 입력#############
-        RandomCenterCrop(min_size=75, max_size=200, p=0.4),
+        RandomCenterCrop(min_size=75, max_size=200, p=0.4),  # Inference 시에는 RandomCenterCrop 반드시 주석 처리!
         A.Resize(img_size, img_size),
         A.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5)),
         ToTensorV2()
