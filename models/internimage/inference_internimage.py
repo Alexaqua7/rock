@@ -116,15 +116,20 @@ def get_grad_norm(parameters, norm_type=2):
 def inference(model, test_loader, device):
     model.eval()
     preds = []
+
+    progress_bar = tqdm(iter(test_loader), desc="Inferencing")
     with torch.no_grad():
-        for imgs in tqdm(iter(test_loader)):
-            imgs = imgs.float().to(device)
-            
-            pred = model(imgs)
-            
-            preds += pred.argmax(1).detach().cpu().numpy().tolist()
+        for idx, images in enumerate(progress_bar):
+            if type(images) == list:
+                images = [item.float().to(device) for item in images]
+            else:
+                images = images.float().to(device)
+            output = model(images)
+            _, predicted = torch.max(output.logits, 1)
+            preds.extend(predicted.cpu().numpy().tolist())
     
     preds = le.inverse_transform(preds)
+
     return preds
 
 @torch.no_grad()
@@ -212,7 +217,7 @@ def tta_inference(data_loader, model, device, label_encoder):
 if __name__ == '__main__':
     import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    trained_path = '../../experiments/internimage_xl_22kto1k_384_fold_2/internimage_xl_22kto1k_384_fold_2_epoch5.pth'
+    trained_path = 'Your Path Here'
     model_name = "../../weights/OpenGVLab/internimage_xl_22kto1k_384"
     saved_name = "internimage_xl_22kto1k_384"
     folder_path = "/".join(trained_path.split("/")[:-1])
