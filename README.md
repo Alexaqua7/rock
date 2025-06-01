@@ -21,7 +21,7 @@
 | 팀원                         | 역할               |
 |------------------------------|--------------------|
 | DonghwanSeo <br> <img src="https://github.com/user-attachments/assets/f1a3b705-6e42-433e-9e00-9f9243d00c07" width="80"/> | TTA, 앙상블, 모델 실험 |
-| aqua3g <br> <img src="https://github.com/user-attachments/assets/3f9bb821-d6bc-47e0-9cb8-d175bbfd107a" width="80"/> | Hard Negative Sampling, Oversampling, 모델 실험 |
+| aqua3g <br> <img src="https://github.com/user-attachments/assets/3d0a8319-2e5d-4add-93d9-131d6f2f9d97" width="80"/> | Hard Negative Sampling, Oversampling, 모델 실험 |
 
 
 ---
