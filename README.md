@@ -14,7 +14,17 @@
 **건설 산업의 디지털 전환**에 기여하는 것이 본 대회의 목표입니다.
 
 ---
+## 👥 팀원 소개
 
+팀명: 건설용 자갈 암석
+
+| 팀원                         | 역할               |
+|------------------------------|--------------------|
+| DonghwanSeo <br> <img src="https://github.com/user-attachments/assets/f1a3b705-6e42-433e-9e00-9f9243d00c07" width="80"/> | TTA, 앙상블, 모델 실험 |
+| aqua3g <br> <img src="https://github.com/user-attachments/assets/3f9bb821-d6bc-47e0-9cb8-d175bbfd107a" width="80"/> | Hard Negative Sampling, Oversampling, 모델 실험 |
+
+
+---
 ## 🗂️ 데이터 소개
 
 - **이미지 수**: 총 약 `475,026`장  
