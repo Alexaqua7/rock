@@ -18,10 +18,20 @@
 
 팀명: 건설용 자갈 암석
 
-| 팀원                         | 역할               |
-|------------------------------|--------------------|
-| DonghwanSeo <br> <img src="https://github.com/user-attachments/assets/f1a3b705-6e42-433e-9e00-9f9243d00c07" width="80"/> | TTA, 앙상블, 모델 실험 |
-| aqua3g <br> <img src="https://github.com/user-attachments/assets/3d0a8319-2e5d-4add-93d9-131d6f2f9d97" width="80"/> | Hard Negative Sampling, Oversampling, 모델 실험 |
+<table>
+  <tr>
+    <td align="center" style="padding: 12px;">
+      <strong>DonghwanSeo</strong><br>
+      <div style="height:1px; background-color:#ddd; width:60%; margin:6px auto;"></div>
+      <img src="https://github.com/user-attachments/assets/f1a3b705-6e42-433e-9e00-9f9243d00c07" width="80"/>
+    </td>
+    <td align="center" style="padding: 12px;">
+      <strong>aqua3g</strong><br>
+      <div style="height:1px; background-color:#ddd; width:60%; margin:6px auto;"></div>
+      <img src="https://github.com/user-attachments/assets/3d0a8319-2e5d-4add-93d9-131d6f2f9d97" width="80"/>
+    </td>
+  </tr>
+</table>
 
 
 ---
@@ -64,12 +74,12 @@
 ---
 ## 🏆 성능 요약
 
-| 모델명                          | Macro-F1 (Validation 기준) | 특징 요약                         |
-|--------------------------------|-----------------------------|------------------------------------|
-| InternImage-XL                 | 91.68%                      | Hard Negative 사용                |
-| DaViT_base                     | 90.77%                      | Hard Negative 사용                |
-| Mamba_out                      | 90.89%                      | Oversampling 사용                 |
-| 🧪 Ensemble                    | **93.29% (Public 기준)**     | TTA + Soft-Ensemble               |
+| 모델명                          | Macro-F1 (Validation 기준) | 
+|--------------------------------|-----------------------------|
+| InternImage-XL                 | 91.68%                      |
+| DaViT_base                     | 90.77%                      | 
+| Mamba_out                      | 90.89%                      | 
+| 🧪 Ensemble                    | **93.29% (Public 기준)**     | 
 
 <details>
   <summary>자세한 설명 보기</summary>
@@ -138,6 +148,7 @@ ROCK/
 * **`run.py`**: 프로젝트의 메인 실행 스크립트입니다. (TIMM 모델 Only)
 * **`inference_*.py` 파일들**: 추론(inference)을 수행하는 스크립트들입니다.
 * **`soft_ensemble.py`**: 소프트 앙상블 관련 스크립트입니다.
+* **`logit_ensemble.py`**: 추론 시 logit을 저장하여 weighted ensemble을 수행할 수 있는 코드입니다.
 
 
 ---
