@@ -416,7 +416,10 @@ class Trainer:
                 'balanced_class_sampling': self.config['TRAIN_MODE'] in [TRAIN_MODE_OVERSAMPLE, TRAIN_MODE_HARD_NEGATIVE, TRAIN_MODE_PROGRESSIVE_HARD_NEGATIVE],
                 'accumulation_steps': self.config.get('ACCUMULATION_STEPS', 1),
                 'loss': {
-                    'name': loss.__class__.__name__
+                    'name': loss.__class__.__name__,
+                    'reduction': loss.reduction,
+                    'ignore_index': getattr(loss, 'ignore_index', None),
+                    'label_smoothing': getattr(loss, 'label_smoothing', None)
                 },
             },
             'validation': {
@@ -435,10 +438,6 @@ class Trainer:
         }
         if self.config['TRAIN_MODE'] in [TRAIN_MODE_HARD_NEGATIVE]:
             config['train']['effective_batch_size'] = self.config['BATCH_SIZE'] * self.config['ACCUMULATION_STEPS']
-
-        # loss 객체의 현재 속성 딕트 중, 생성자에서 설정 가능한 항목만 추출
-        config['train']['loss']['params'] = {{k: getattr(loss, k)} for k in loss.__dict__}
-
 
         # Add optimizer parameters
         for k, v in self.optimizer.state_dict()['param_groups'][0].items():
@@ -616,7 +615,7 @@ class Trainer:
         """
         # Initialize k-fold
         kFold_dataset = self.init_dataset('train') # dict 형태
-        folder_idx = 27
+        folder_idx = None
         
         print(f"Starting {self.config['FOLD']}-Fold Cross Validation Training...")
 

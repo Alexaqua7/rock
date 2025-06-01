@@ -158,7 +158,8 @@ def hard_negative_train(model, optimizer, train_loader, val_loader, scheduler, d
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-            'best_score': best_score
+            'best_score': best_score,
+            'hard_negative_state': hard_negative_miner.state_dict() if hasattr(hard_negative_miner, 'state_dict') else None
         }
         torch.save(checkpoint, os.path.join(folder_path, f'{experiment_name}-epoch_{epoch}.pth'))
         print(f"Checkpoint at epoch {epoch} saved → {experiment_name}-epoch_{epoch}.pth")
@@ -179,7 +180,8 @@ def hard_negative_train(model, optimizer, train_loader, val_loader, scheduler, d
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
-                'best_score': best_score
+                'best_score': best_score,
+                'hard_negative_state': hard_negative_miner.state_dict() if hasattr(hard_negative_miner, 'state_dict') else None
             }
             torch.save(checkpoint, save_path)
             print(f"Best model saved (epoch {epoch}, F1={_val_score:.4f}) → {save_path}")
@@ -433,11 +435,7 @@ def progressive_hard_negative_train(model, optimizer, train_dataset, val_loader,
                 'total_epochs': progressive_scheduler.total_epochs,
                 'schedule_type': progressive_scheduler.schedule_type
             },
-            'hard_negative_miner_state': {
-                'hard_negative_indices': list(hard_negative_miner.hard_negative_indices) if hard_negative_miner else [],
-                'hard_negative_scores': hard_negative_miner.hard_negative_scores if hard_negative_miner else {},
-                'memory_size': hard_negative_miner.memory_size if hard_negative_miner else 0
-            }
+            'hard_negative_state': hard_negative_miner.state_dict() if hasattr(hard_negative_miner, 'state_dict') else None
         }
         
         epoch_checkpoint_path = os.path.join(folder_path, f'{experiment_name}-epoch_{epoch}.pth')

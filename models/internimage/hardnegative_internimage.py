@@ -24,6 +24,8 @@ import seaborn as sns
 import json
 from sklearn.model_selection import StratifiedKFold
 from torch import nn
+import cv2
+
 CFG = {
     'IMG_SIZE': 384,
     'EPOCHS': 20,
@@ -36,7 +38,7 @@ CFG = {
     'HARD_NEGATIVE_MEMORY_SIZE': 1000,
     'HARD_NEGATIVE_RATIO': 0.2,
     'TRAIN': {
-        'ACCUMULATION_STEPS': 8, # 예시로 추가
+        'ACCUMULATION_STEPS': 32, # 예시로 추가
         'CLIP_GRAD': None # 예시로 추가
     }
 }
@@ -631,7 +633,6 @@ def train(CFG, model, criterion, train_loader, val_loader, optimizer, lr_schedul
 
     wandb.finish()
 
-
 if __name__ == '__main__':
     import cv2  # PadSquare와 CustomDataset에서 사용
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -648,8 +649,6 @@ if __name__ == '__main__':
 
     skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=CFG['SEED'])
     for fold, (train_idx, val_idx) in enumerate(skf.split(df['img_path'], df['rock_type'])):
-        if fold in [0,1,2,3]:
-            continue
 
         trained_path = ""
 
@@ -660,11 +659,9 @@ if __name__ == '__main__':
             experiment_name = os.path.splitext(os.path.basename(trained_path))[0].split('-')[0]
         folder_path = os.path.join("../../experiments", experiment_name)
         wandb.init(
-            project="rock-classification",
+            project="your_project",
             config=CFG,
             name=experiment_name,
-            # resume='must',
-            # id="38lkdqqs"
             )
         seed_everything(CFG['SEED'])
 
