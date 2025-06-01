@@ -248,7 +248,8 @@ python hardnegative_internimage.py
 ---
 
 ### 2. 추론 (Inference)
-학습한 모델을 이용하여 테스트 데이터를 예측합니다.
+학습한 모델을 이용하여 테스트 데이터를 예측합니다. 
+
 ※ Test 시에는 TEST_TRANSFORM에 RandomCenterCrop이 포함되지 않도록 반드시 주석 처리해야 합니다.
 
 #### TIMM 모델
