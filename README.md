@@ -133,6 +133,7 @@ ROCK/
 ├── run.py
 ├── sample_submission.csv
 ├── soft_ensemble.py
+├── mamba_kfold.py
 └── test.csv
 
 </pre>
@@ -149,6 +150,7 @@ ROCK/
 * **`inference_*.py` 파일들**: 추론(inference)을 수행하는 스크립트들입니다.
 * **`soft_ensemble.py`**: 소프트 앙상블 관련 스크립트입니다.
 * **`logit_ensemble.py`**: 추론 시 logit을 저장하여 weighted ensemble을 수행할 수 있는 코드입니다.
+* **`mamba_kfold.py`**: MambaOut 모델의 학습에 사용합니다.
 
 
 ---
@@ -158,6 +160,8 @@ ROCK/
 본 프로젝트는 세 가지 실험 방식(기본 학습, Hard Negative 학습, Oversampling 학습)과 추론 방식을 포함합니다.
 
 ### 1. 학습 (Training)
+
+※ MambaOut 모델의 경우, mamba_kfold.py 코드를 사용합니다.
 
 ### TIMM 모델
 
