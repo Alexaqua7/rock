@@ -56,13 +56,90 @@
 
 - **Baseline**: `Inception ResNet`
 - **최종 사용**: `InternImage-XL`, `DaViT_base`, `Mamba_out`
-- **Augmentations**: `RandomCenterCrop`, `HorizontalFlip`, `VerticalFlip`, `CLAHE`, 'Gaussian Noise'
+- **Augmentations**: `RandomCenterCrop`, `HorizontalFlip`, `VerticalFlip`, `CLAHE`, `Gaussian Noise`
 - **Loss Function**: `CrossEntropyLoss`, `LabelSmoothing`
 - **Optimizer**: `AdamW`, `Adam`
 - **Scheduler**: `CosineAnnealingLR`, `StepLR`
 
 ---
 
+## ⚙️ 실험 실행 방법
+
+본 프로젝트는 세 가지 실험 방식(기본 학습, Hard Negative 학습, Oversampling 학습)과 추론 방식을 포함합니다.
+
+### 1. 학습 (Training)
+
+#### 1-1. Hard Negative Sample Training
+
+- 어려운 샘플(hard samples)에 집중하여 학습 성능을 향상시키는 방법입니다.
+- Hard Negative Sample은 최근 학습 중 오분류된 데이터들 중 높은 손실을 기록한 샘플들로 구성되며, `HARD_NEGATIVE_MEMORY_SIZE`만큼 저장됩니다.
+- 전체 배치에서 `HARD_NEGATIVE_RATIO` 만큼의 샘플을 Hard Negative에서 선택하며, 나머지는 클래스 균등 샘플링으로 채워집니다.
+- 전체 배치에서 `HARD_NEGATIVE_RATIO`에 따른 Hard Negative 샘플과, 그 외 클래스 균등 샘플링이 채워지는 기준은 `BATCH_SIZE` × `ACCUMULATION_STEPS` 크기를 기준으로 채워집니다.
+- `trainer.predict()`을 **주석 처리** 후에, `trainer.train()`를 **주석 해제**한 상태로 실행합니다.
+**🔧 주요 설정 인자**
+
+| 인자명                     | 설명                                                                 |
+|---------------------------|----------------------------------------------------------------------|
+| `TRAIN_TRANSFORM` | Train 시 사용 될 Transforms (`Albumentations.Compose` 활용)       |
+| `TEST_TRANSFORM` | Validation 시 사용 될 Transforms (`Albumentations.Compose` 활용)       |
+| `BALANCED_BATCH`                               | `True`로 설정                  |
+| `HARD_NEGATIVE_MEMORY_SIZE` | Hard Negative Pool의 최대 크기 (예: 1000)                             |
+| `HARD_NEGATIVE_RATIO`       | 전체 배치 중 Hard Negative로 채울 비율 (예: 0.2이면 전체 배치 중 20%)   |
+| `ACCUMULATION_STEPS`        | 배치 크기 누적을 위한 step 수 (`BATCH_SIZE` × `ACCUMULATION_STEPS`) |
+
+**💻 실행 방법**
+
+```bash
+python run.py
+```
+
+
+
+#### 1-2. Oversampling Training
+
+클래스 불균형 문제를 해결하기 위한 방식입니다.
+
+- `BALANCED_BATCH=True`로 설정하면, 각 클래스에서 균등하게 샘플을 뽑아 배치를 구성합니다.
+- `HARD_NEGATIVE_MEMORY_SIZE`와 `HARD_NEGATIVE_RATIO`를 0으로 설정해야 Oversampling만 적용됩니다.
+- `trainer.predict()`을 **주석 처리** 후에, `trainer.train()`를 **주석 해제**한 상태로 실행합니다.
+##### 🔧 주요 설정 인자
+
+| 인자명                                         | 설명                                               |
+|-----------------------------------------------|----------------------------------------------------|
+| `TRAIN_TRANSFORM` | Train 시 사용 될 Transforms (`Albumentations.Compose` 활용)       |
+| `TEST_TRANSFORM` | Validation 시 사용 될 Transforms (`Albumentations.Compose` 활용)       |
+| `BALANCED_BATCH`                               | `True`로 설정 시 Oversampling 사용                  |
+| `HARD_NEGATIVE_MEMORY_SIZE`, `HARD_NEGATIVE_RATIO` | 둘 다 `0`으로 설정해야 Oversampling만 적용됩니다     |
+
+##### 🧪 실행 예시
+
+```bash
+python run.py
+```
+
+---
+
+### 2. 추론 (Inference)
+
+학습한 모델을 이용하여 테스트 데이터를 예측합니다.
+
+- `trainer.train()`을 **주석 처리** 후에, `trainer.predict()`를 **주석 해제**한 상태로 실행합니다.
+
+#### ✅ 필수 설정
+
+| 인자명         | 설명                                                                 |
+|----------------|----------------------------------------------------------------------|
+| `TEST_TRANSFORM` | Inference 시 사용 될 Transforms (`Albumentations.Compose` 활용)       |
+| `TRAINED_PATH` | 학습된 모델이 저장된 경로 (예: `./experiments/your_model.pth`)       |
+
+#### 🧪 실행 예시
+
+```bash
+python run.py
+```
+
+
+---
 ## 🏆 성능 요약
 
 | 모델명                          | Macro-F1 (Validation 기준) | 특징 요약                         |
